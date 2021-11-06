@@ -7,8 +7,11 @@
 
 #include "riss/utils/SimpleGraph.h"
 
-#include <math.h>
+#include "riss/core/SolverTypes.h"
+#include "riss/mtl/Sort.h"
+#include "riss/utils/community.h"
 #include <assert.h>
+#include <math.h>
 #include <sstream>
 #include <iostream>
 #include <algorithm>
