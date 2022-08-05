@@ -198,10 +198,14 @@ declare -i SIMPLIFY_STATUS=0
     -whiteList="$WHITE_FILE" \
     -dimacs="$SIMPLIFIED_CNF" \
     -no-dense \
+    -no-unhide \
+    -no-bve \
+    -no-bce \
+    -no-xor \
+    -no-ee \
     -backbone \
     -be \
     -search=0 \
-    2> "$CP3_STDERR" \
     || SIMPLIFY_STATUS=$?
 echo "c simplification returned with $SIMPLIFY_STATUS"
 
