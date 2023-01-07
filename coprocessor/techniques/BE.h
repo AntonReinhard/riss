@@ -34,8 +34,10 @@ namespace Coprocessor {
         Riss::CoreConfig* solverconfig;
         Riss::vec<Riss::Lit> assumptions; // current set of assumptions that are used for the next SAT call
 
-        int conflictBudget;        // how many conflicts is the solver allowed to have before aborting the search for a model
-        std::vector<bool> varUsed; // "map" from variable to whether it is used in the solver, i.e. whether it is not a unit
+        int conflictBudget;         // how many conflicts is the solver allowed to have before aborting the search for a model
+        std::vector<bool> varUsed;  // "map" from variable to whether it is used in the solver, i.e. whether it is not a unit
+        GROUPED grouped = GROUPED::CONJUNCTIVE;
+        int groupSize = 64;              // literal grouping size
 
         // statistic variables
         int nDeletedVars;
@@ -58,10 +60,18 @@ namespace Coprocessor {
         mutable bool dirtyCache;
 
         /**
-         * @brief The input and output variables of the bipartition algorithm
+         * @brief The output variables of the elimination
          */
         std::vector<Var> outputVariables;
-        std::vector<Var> inputVariables;
+
+        enum class InputOutputState {
+            UNCONFIRMED,
+            INPUT,
+            OUTPUT,
+            COUNT
+        };
+        // bitmap of variables, every variable starts as "unconfirmed"
+        std::vector<InputOutputState> inOutVariables;
 
     public:
         void reset();
@@ -101,11 +111,9 @@ namespace Coprocessor {
          * @brief Tests whether variable x is defined in terms of input variables of the formula and variables that follow it in the sorted list of
          * variables
          *
-         * @param index The index of the variable in the sorted list of variables
-         * @param vars The list of all variables sorted by occurrence
-         * @return bool True if x is defined, False if not or on timeout/error
+         * @param vars The group of variables to check for definedness
          */
-        bool isDefined(int32_t index, std::vector<Var>& vars);
+        void isDefined(const std::vector<Var>& vars);
 
         /**
          * @brief Copies the state of the solver to the ownSolver

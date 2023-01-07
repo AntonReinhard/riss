@@ -54,7 +54,6 @@ namespace Coprocessor {
         , likelihood_heuristic(static_cast<LIKELIHOOD_HEURISTIC>((int)_config.opt_backbone_sorting))
         , grouping(static_cast<GROUPED>((int)_config.opt_backbone_grouping))
         , nGrouping(_config.opt_backbone_ngrouping)
-        , lookedAtPercent(_config.opt_backbone_decreasePercent)
         , nSolve(0)
         , unitsBefore(0)
         , totalConflits(0)
@@ -95,7 +94,6 @@ namespace Coprocessor {
         stream << "c [STAT] BACKBONE nGrouping: " << nGrouping << std::endl;
         stream << "c [STAT] BACKBONE grouping strat: " << groupingToString(grouping) << std::endl;
         stream << "c [STAT] BACKBONE sorting strat: " << sortingToString(likelihood_heuristic) << std::endl;
-        stream << "c [STAT] BACKBONE lookedAtPercent: " << lookedAtPercent << std::endl;
         stream << "c [STAT] BACKBONE found variables: " << backbone.size() - unitsBefore << std::endl;
         stream << "c [STAT] BACKBONE units before: " << unitsBefore << std::endl;
         stream << "c [STAT] BACKBONE nConf: " << totalConflits << std::endl;
@@ -148,7 +146,7 @@ namespace Coprocessor {
 
         // sanity check for grouping
         if (nGrouping == 1 && grouping != GROUPED::NOT) {
-            std::cerr << "nGrouping 1 only makes sense without grouping, reverting to no groups" << std::endl;
+            std::cerr << "c nGrouping 1 only makes sense without grouping, reverting to no groups" << std::endl;
             grouping = GROUPED::NOT;
         }
 
@@ -225,7 +223,7 @@ namespace Coprocessor {
         Riss::vec<Lit> unitLit;
 
         int lookedAtVars = 0;
-        int nGroupingDecreased = 1;
+        int groupBudget = litsToCheck.size();
         // Main loop over the literals
         while (!litsToCheck.empty()) {
             unitLit.clear();
@@ -238,21 +236,18 @@ namespace Coprocessor {
                 continue;
             }
 
-            if (!varUsed[var(currentLiteral)]) {
-                std::cout << "c what the fuck" << std::endl;
-                // skip variables that are units
-                continue;
-            }
+            if (nGrouping > 1 && lookedAtVars > groupBudget) {
+                std::cout << "c Decreasing nGrouping to " << nGrouping / 2 << " after " << lookedAtVars << " lookedAtVars" << std::endl;
 
-            // std::cout << "c checking " << (sign(currentLiteral) ? '-' : ' ') << var(currentLiteral) << std::endl;
-
-            if (nGrouping > 1 && lookedAtVars > lookedAtPercent * static_cast<double>(nGroupingDecreased) * static_cast<double>(noUsedVars)) {
                 nGrouping = nGrouping / 2;
-                std::cout << "c Decreasing nGrouping to " << nGrouping << " after " << lookedAtVars << " lookedAtVars" << std::endl;
+                
+                //reset group budget and lookedAtVars
+                lookedAtVars = 0;
+                groupBudget = litsToCheck.size();
+
                 if (nGrouping == 1) {
                     grouping = GROUPED::NOT;
                 }
-                nGroupingDecreased++;
             }
 
             ownSolver->model.clear();
@@ -278,8 +273,6 @@ namespace Coprocessor {
                         --j;
                         continue;
                     }
-                    // std::cout << "c adding " << (sign(litsToCheck.front()) ? '-' : ' ') << var(litsToCheck.front()) << " to the group" <<
-                    // std::endl;
                     unitLit.push(~(litsToCheck.front()));
                     litsToCheck.pop();
                     ++lookedAtVars;
@@ -306,24 +299,20 @@ namespace Coprocessor {
             ownSolver->assumptions.clear();
 
             if (solveResult == l_False) {
-                // std::cout << "No Solution, ";
                 switch (grouping) {
                 case GROUPED::NOT:
-                    // std::cout << "found variable" << std::endl;
                     // if there's no model then the literal is in the backbone, because
                     // apparently no model exists with the literal negated
                     // use the remaining Literal for the backbone
                     backbone.push_back(currentLiteral);
                     continue;
                 case GROUPED::CONJUNCTIVE:
-                    // std::cout << "readding " << unitLit.size() << " units to the to check list" << std::endl;
                     // if conjunctive grouping was used, no info was gained, retry the vars again later
                     for (int k = 0; k < unitLit.size(); ++k) {
                         litsToCheck.push(~(unitLit[k]));
                     }
                     continue;
                 case GROUPED::DISJUNCTIVE:
-                    // std::cout << "found variables" << std::endl;
                     //  if disjunctive grouping was used, no solution means that all lits were in the backbone
                     for (int k = 0; k < unitLit.size(); ++k) {
                         backbone.push_back(~(unitLit[k]));
@@ -346,7 +335,6 @@ namespace Coprocessor {
                 continue;
             }
 
-            // std::cout << "Cross checking models" << std::endl;
             //  check the model against the remaining candidates
             auto& model = ownSolver->model;
             for (int32_t j = 0; j < model.size(); ++j) {
@@ -356,7 +344,6 @@ namespace Coprocessor {
                 }
                 // check if signs are different
                 if (sign(possibleBackboneLiterals[j]) != (model[j] != l_True)) {
-                    // std::cout << "eliminated " << (sign(possibleBackboneLiterals[j]) ? '-' : ' ') << var(possibleBackboneLiterals[j]) << std::endl;
                     possibleBackboneLiterals[j].x = -1;
                     ++crossCheckRemovedLiterals;
                 }
@@ -365,14 +352,6 @@ namespace Coprocessor {
 
         ran = true;
         totalConflits = ownSolver->conflicts;
-
-        /*
-        std::cout << "backbone vars found: ";
-        for (const auto& b : backbone) {
-            std::cout << (sign(b) ? '-' : ' ') << var(b) << ", ";
-        }
-        std::cout << std::endl;
-        */
     }
 
     void BackboneSimplification::copySolver() {
@@ -405,8 +384,7 @@ namespace Coprocessor {
         for (std::size_t i = 0; i < solver.trail.size(); ++i) {
             backbone.emplace_back(solver.trail[i]);
         }
-
-        std::cout << "c learnt clauses: " << solver.nLearnts() << std::endl;
+        
         unitsBefore = backbone.size();
 
         for (const auto& it : varUsed) {

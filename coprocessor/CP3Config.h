@@ -511,13 +511,14 @@ namespace Coprocessor {
         Riss::IntOption opt_backbone_ngrouping;          // how many lits are tested at once
         Riss::IntOption opt_backbone_grouping;           // what grouping strategy is used
         Riss::IntOption opt_backbone_sorting;            // what sorting strategy is used
-        Riss::DoubleOption opt_backbone_decreasePercent; // after how many percent of used variables will ngrouping be decreased
 
         //
         // Bipartition and Elimination
         //
-        Riss::IntOption opt_be_nconf;  // limit of conflicts for solver calls
-        Riss::IntOption opt_be_maxres; // limit of resolvents allowed to be added to forget one var
+        Riss::IntOption opt_be_nconf;           // limit of conflicts for solver calls
+        Riss::IntOption opt_be_maxres;          // limit of resolvents allowed to be added to forget one var
+        Riss::IntOption opt_be_grouping;        // kind of grouping for be
+        Riss::IntOption opt_be_ngrouping;       // size of initial groups
 
         //
         // Unit Propagation

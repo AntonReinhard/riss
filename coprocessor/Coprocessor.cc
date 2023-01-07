@@ -759,7 +759,7 @@ namespace Coprocessor {
 
                 if (config.opt_verbose > 1) {
                     printStatistics(cerr);
-                    backbone.printStatistics(cerr);
+                    backbone.printStatistics(cout);
                 }
 
                 DOUT(if ((const char*)config.stepbystepoutput != nullptr)
@@ -793,7 +793,7 @@ namespace Coprocessor {
 
                 if (config.opt_verbose > 1) {
                     printStatistics(cerr);
-                    be.printStatistics(cerr);
+                    be.printStatistics(cout);
                 }
 
                 DOUT(if ((const char*)config.stepbystepoutput != nullptr)

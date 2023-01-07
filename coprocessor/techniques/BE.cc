@@ -17,6 +17,21 @@ Copyright (c) 2021, Anton Reinhard, LGPL v2, see LICENSE
 
 using namespace Riss;
 
+namespace {
+    inline std::string groupingToString(Coprocessor::GROUPED group) {
+        switch (group) {
+        case Coprocessor::GROUPED::NOT:
+            return "none";
+        case Coprocessor::GROUPED::CONJUNCTIVE:
+            return "conjunction";
+        case Coprocessor::GROUPED::DISJUNCTIVE:
+            return "disjunction";
+        default:
+            return "unknown";
+        }
+    }
+}
+
 namespace Coprocessor {
 
     BE::BE(CP3Config& _config, ClauseAllocator& _ca, ThreadController& _controller, CoprocessorData& _data, Propagation& _propagation,
@@ -30,6 +45,8 @@ namespace Coprocessor {
         , nVar(solver.nVars())
         , maxRes(_config.opt_be_maxres)
         , conflictBudget(_config.opt_be_nconf)
+        , grouped(static_cast<GROUPED>((int)_config.opt_be_grouping))
+        , groupSize(_config.opt_be_ngrouping)
         , varUsed(solver.nVars(), false)
         , nDeletedVars(0)
         , copyTime(0)
@@ -59,23 +76,24 @@ namespace Coprocessor {
     }
 
     void BE::printStatistics(std::ostream& stream) {
-        stream << "c [STAT] BE maxres: " << maxRes << std::endl;
-        stream << "c [STAT] BE nConf: " << conflictBudget << std::endl;
-        stream << "c [STAT] BE deleted variables: " << nDeletedVars << std::endl;
-        stream << "c [STAT] BE bipartitionTime: " << bipartitionTime << std::endl;
-        stream << "c [STAT] BE eliminationTime: " << eliminationTime << std::endl;
-        stream << "c [STAT] BE occurrenceSimplTime: " << occurrenceSimplTime << std::endl;
-        stream << "c [STAT] BE occurrences removed: " << nOccurrencesRemoved << std::endl;
-        stream << "c [STAT] BE solverTime: " << solverTime << std::endl;
-        stream << "c [STAT] BE nSolverCalls: " << nSolverCalls << std::endl;
-        stream << "c [STAT] BE elimination candidates: " << eliminationCandidates << std::endl;
-        stream << "c [STAT] BE no. top level iterations: " << nTopLevelIterations << std::endl;
+        stream << "c [STAT] BE maxres: " << maxRes << "\n";
+        stream << "c [STAT] BE nConf: " << conflictBudget << "\n";
+        stream << "c [STAT] BE deleted variables: " << nDeletedVars << "\n";
+        stream << "c [STAT] BE bipartitionTime: " << bipartitionTime << "\n";
+        stream << "c [STAT] BE eliminationTime: " << eliminationTime << "\n";
+        stream << "c [STAT] BE occurrenceSimplTime: " << occurrenceSimplTime << "\n";
+        stream << "c [STAT] BE occurrences removed: " << nOccurrencesRemoved << "\n";
+        stream << "c [STAT] BE solverTime: " << solverTime << "\n";
+        stream << "c [STAT] BE nSolverCalls: " << nSolverCalls << "\n";
+        stream << "c [STAT] BE elimination candidates: " << eliminationCandidates << "\n";
+        stream << "c [STAT] BE no. top level iterations: " << nTopLevelIterations << "\n";
         int usedVars = 0;
         for (const auto& it : varUsed) {
             if (bool(it))
                 ++usedVars;
         }
-        stream << "c [STAT] BE used variables: " << usedVars << std::endl;
+        stream << "c [STAT] BE used variables: " << usedVars << "\n";
+        stream.flush();
     }
 
     void BE::reset() {
@@ -97,9 +115,15 @@ namespace Coprocessor {
             return false;
         }
 
+        if (grouped == GROUPED::NOT) {
+            groupSize = 1;
+        }
+
         computeBipartition();
 
         eliminate();
+
+        data.sortClauseLists();
 
         ran = true;
 
@@ -113,6 +137,7 @@ namespace Coprocessor {
     }
 
     void BE::computeBipartition() {
+        std::cout << "c Starting Bipartition" << std::endl;
 
         copySolver();
 
@@ -120,11 +145,11 @@ namespace Coprocessor {
 
         MethodTimer timer(&bipartitionTime);
 
-        // line 1 - get the backbone and put it into output variables. this includes all units
+        // line 1 - get the backbone and set it as output variables. this includes all units
         auto& backbone = backboneSimpl.getBackbone();
-        outputVariables.reserve(backbone.size());
+        inOutVariables.resize(solver.nVars(), InputOutputState::UNCONFIRMED);
         for (const auto& lit : backbone) {
-            outputVariables.emplace_back(var(lit));
+            inOutVariables[var(lit)] = InputOutputState::OUTPUT;
         }
 
         // line 2
@@ -136,26 +161,65 @@ namespace Coprocessor {
         std::sort(vars.begin(), vars.end(), [&](const Var& a, const Var& b) {
             return data[a] < data[b];
         });
+        std::queue<Var> varQueue;
+        for (const auto& v : vars) {
+            if (varUsed[v]) {
+                varQueue.push(v);
+            }
+        }
 
         // line 3
 
         // line 4
-        for (int i = 0; i < vars.size(); ++i) {
-            if (!varUsed[vars[i]]) {
-                // skip unused variables
-                inputVariables.emplace_back(vars[i]);
-                continue;
+        int lookedAtVars = 0;
+        int groupBudget = varQueue.size();
+        const int usedVars = varQueue.size();
+        while (!varQueue.empty()) {
+            if (grouped != GROUPED::NOT && lookedAtVars >= groupBudget) {
+                std::cout << "Decreasing group size to " << groupSize / 2 << " after " << lookedAtVars << " variables looked at" << std::endl;
+
+                // decrease group size
+                groupSize /= 2;
+
+                // reset budget
+                groupBudget = varQueue.size();
+                lookedAtVars = 0;
+
+                if (groupSize == 1) {
+                    grouped = GROUPED::NOT;
+                }
             }
-            if (isDefined(i, vars)) {
-                outputVariables.emplace_back(vars[i]);
-            } else {
-                inputVariables.emplace_back(vars[i]);
+
+            // assemble current group
+            std::vector<Var> group;
+            for (auto i = 0; i < groupSize && !varQueue.empty(); ++i) {
+                group.emplace_back(varQueue.front());
+                varQueue.pop();
+                ++lookedAtVars;
+            }
+            if (group.empty()) {
+                break;
+            }
+
+            // check definedness, let the function update the inOutVars bitmap
+            isDefined(group);
+
+            // put the group members back into the queue
+            for (const auto& v : group) {
+                if (inOutVariables[v] == InputOutputState::UNCONFIRMED) {
+                    varQueue.push(v);
+                }
+                assert(!(groupSize > 1 && grouped == GROUPED::CONJUNCTIVE && inOutVariables[v] == InputOutputState::OUTPUT));
             }
         }
 
+        outputVariables.reserve(backbone.size());
+        for (auto i = 0; i < solver.nVars(); ++i) {
+            if (inOutVariables[i] == InputOutputState::OUTPUT) {
+                outputVariables.push_back(i);
+            }
+        }
         eliminationCandidates = outputVariables.size() - solver.trail.size();
-
-        std::cout << "c Bipartition done!" << std::endl;
     }
 
     void BE::eliminate() {
@@ -167,7 +231,7 @@ namespace Coprocessor {
         // the variables that are deleted, so they can be completely removed from the cnf
         std::vector<Var> deletedVars;
 
-        int changedVars = 0;
+        int changedVars = 100000;
         const int minChange = 0.0001 * data.nVars() + 1;
 
         // line 3
@@ -260,6 +324,9 @@ namespace Coprocessor {
                         data.lits.clear();
                         // add clauses from R
                         for (auto& c : R) {
+                            if (c.size() == 1) {
+                                std::cout << "Unit clause resolved!!" << std::endl;
+                            }
                             assert(!c.empty());
                             for (const auto& l : c) {
                                 data.lits.emplace_back(l);
@@ -295,43 +362,111 @@ namespace Coprocessor {
                     }
                 }
             }
-            std::cout << "c Removed " << changedVars << " variables this iteration\n";
         }
         nDeletedVars = deletedVars.size();
-
-        std::cout << "c Elimination Done" << std::endl;
     }
 
-    bool BE::isDefined(const int32_t index, std::vector<Var>& vars) {
-        const Var x = vars[index];
+    void BE::isDefined(const std::vector<Var>& vars) {
+        // put "vars" as output variables temporarily
+        for (const auto& v : vars) {
+            inOutVariables[v] = InputOutputState::OUTPUT;
+        }
+
         // every new variable made from existing ones will just get nVars added to themselves
         // this way no collisions can happen
-        const Var xPrime = x + solver.nVars();
 
         Riss::vec<Lit> assumptions;
 
-        // add assumption sZ for vars[i]
-        for (auto i = index + 1; i < vars.size(); ++i) {
-            assumptions.push(mkLit(vars[i] + (2 * nVar)));
+        // add assumption sZ for every UNCONFIRMED or INPUT variable ("vars" variables are output at this point)
+        for (auto i = 1; i < nVar; ++i) {
+            if (inOutVariables[i] == InputOutputState::INPUT || inOutVariables[i] == InputOutputState::UNCONFIRMED) {
+                assumptions.push(mkLit(i + (2 * nVar)));
+                // sZ and sZ' exclude each other, might as well tell the solver
+                assumptions.push(mkLit(i + (3 * nVar), true));
+            }
         }
 
-        // add assumptions sZ for inputVariables
-        for (auto& v : inputVariables) {
-            assumptions.push(mkLit(v + (2 * nVar)));
+        // add x and ~xprime unit clauses (breaking symmetry)
+        if (groupSize == 1) {
+            assert(vars.size() == 1);
+            assumptions.push(mkLit(vars[0]));
+            assumptions.push(mkLit(vars[0] + nVar, true));
+        } else {
+            // can't (or at least shouldn't) break symmetry with a larger group
+            for (const auto& v : vars) {
+                // use the sZ' (+ nvars * 3)
+                assumptions.push(mkLit(v + (2 * nVar), true));
+                assumptions.push(mkLit(v + (3 * nVar)));
+            }
         }
-
-        // add x and ~xprime unit clauses
-        assumptions.push(mkLit(x));
-        assumptions.push(mkLit(xPrime, true));
 
         // now set conflict budget
         ownSolver->setConfBudget(conflictBudget);
 
         ownSolver->assumptions.clear();
 
-        MethodTimer timer(&solverTime);
-        ++nSolverCalls;
-        return ownSolver->solveLimited(assumptions) == l_False;
+        Riss::lbool res;
+        {
+            MethodTimer timer(&solverTime);
+            ++nSolverCalls;
+            res = ownSolver->solveLimited(assumptions);
+        }
+
+        if (groupSize == 1) {
+            if (res == l_False) {
+                // it's defined
+                // the variable is already set as output so nothing to be done
+                return;
+            }
+            if (res == l_True || res == l_Undef) {
+                // it's not defined or ran out of time
+                inOutVariables[vars[0]] = InputOutputState::INPUT;
+                return;
+            }
+        }
+
+        // group size > 1
+        if (grouped == GROUPED::CONJUNCTIVE) {
+            if (res == l_False || res == l_Undef) {
+                // did not find information, reset to unknown
+                for (const auto& v : vars) {
+                    inOutVariables[v] = InputOutputState::UNCONFIRMED;
+                }
+                return;
+            }
+
+            if (res == l_True) {
+                // none of the variables are defined -> all are input
+                for (const auto& v : vars) {
+                    inOutVariables[v] = InputOutputState::INPUT;
+                }
+                std::cout << "c Yay, removed " << vars.size() << " variables at once" << std::endl;
+                return;
+            }
+        }
+
+        if (grouped == GROUPED::DISJUNCTIVE) {
+            if (res == l_False) {
+                // all are defined -> all are output
+                for (const auto& v : vars) {
+                    inOutVariables[v] = InputOutputState::OUTPUT;
+                }
+                return;
+            }
+
+            if (res == l_True || res == l_Undef) {
+                // at least one variable is not defined -> find which
+                auto& model = ownSolver->model;
+                for (const auto& v : vars) {
+                    if (model[v + nVar * 3] == l_True) {
+                        inOutVariables[v] = InputOutputState::INPUT;
+                    } else {
+                        inOutVariables[v] = InputOutputState::UNCONFIRMED;
+                    }
+                }
+                return;
+            }
+        }
     }
 
     void BE::copySolver() {
@@ -347,8 +482,10 @@ namespace Coprocessor {
         // register variables
         // 1 * nVar for original variables
         // 2 * nVar for sigma prime
-        // 3 * nVar for the s_z variables from the paper
-        for (auto i = 0; i < nVar * 3; ++i) {
+        // 3 * nVar for the s_z variables from the paper (s_z true makes z == z')
+        // 4 * nVar for extra s_z' variables -> (s_z true makes z != z') -> needed for literal grouping
+        int nVars = nVar * ((groupSize >= 1) ? 4 : 3);
+        for (auto i = 0; i < nVars; ++i) {
             ownSolver->newVar();
         }
 
@@ -394,6 +531,23 @@ namespace Coprocessor {
             addedClause.push(mkLit(zP, true));
             ownSolver->integrateNewClause(addedClause);
             addedClause.clear();
+
+            if (groupSize >= 1) {
+                // add two extra clauses for literal grouping
+                const auto sZP = var + nVar * 3;
+                // clause (~sZ', z, zP)
+                addedClause.push(mkLit(sZP, true));
+                addedClause.push(mkLit(z));
+                addedClause.push(mkLit(zP));
+                ownSolver->integrateNewClause(addedClause);
+                addedClause.clear();
+                // clause (~sZ', ~z, ~zP)
+                addedClause.push(mkLit(sZP, true));
+                addedClause.push(mkLit(z, true));
+                addedClause.push(mkLit(zP, true));
+                ownSolver->integrateNewClause(addedClause);
+                addedClause.clear();
+            }
         }
     }
 
@@ -476,16 +630,10 @@ namespace Coprocessor {
         // iterate through the clauses containing x/~x
         for (const auto& pC : posClauses) {
             const auto& posClause = ca[pC];
-            if (posClause.size() == 1) {
-                printf("c no\n");
-            }
             const Lit* posLit = (const Lit*)(posClause);
 
             for (const auto& nC : negClauses) {
                 const auto& negClause = ca[nC];
-                if (posClause.size() == 1) {
-                    printf("c no\n");
-                }
                 const Lit* negLit = (const Lit*)(negClause);
 
                 resolvents.emplace_back();
@@ -499,17 +647,16 @@ namespace Coprocessor {
                 }
                 for (std::size_t i = 0; i < negClause.size(); ++i) {
                     if (negLit[i] != negX) {
-                        resolvent.emplace_back(negLit[i]);
+                        // need to make sure to not add duplicate lits
+                        if (std::find(resolvent.begin(), resolvent.end(), negLit[i]) == resolvent.end()) {
+                            resolvent.emplace_back(negLit[i]);
+                        }
                     }
                 }
 
                 if (isTautology(resolvent)) {
                     resolvents.erase(resolvents.end() - 1);
                 }
-
-                /*if (resolvent.size() <= 1) {
-                    printf("c no\n");
-                }*/
             }
         }
 
