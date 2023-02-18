@@ -204,6 +204,8 @@ declare -i SIMPLIFY_STATUS=0
     -no-xor \
     -no-ee \
     -backbone \
+    -backbone_grouping=1 \
+    -backbone_ngrouping=32 \
     -be \
     -search=0 \
     || SIMPLIFY_STATUS=$?
