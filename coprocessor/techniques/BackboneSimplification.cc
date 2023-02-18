@@ -237,13 +237,13 @@ namespace Coprocessor {
             }
 
             if (nGrouping > 1 && lookedAtVars > groupBudget) {
-                std::cout << "c Decreasing nGrouping to " << nGrouping / 2 << " after " << lookedAtVars << " lookedAtVars" << std::endl;
-
                 nGrouping = nGrouping / 2;
                 
                 //reset group budget and lookedAtVars
                 lookedAtVars = 0;
                 groupBudget = litsToCheck.size();
+
+                std::cout << "Decreasing group size to " << nGrouping << ", " << groupBudget << " variables left" << std::endl;
 
                 if (nGrouping == 1) {
                     grouping = GROUPED::NOT;
@@ -335,7 +335,7 @@ namespace Coprocessor {
                 continue;
             }
 
-            //  check the model against the remaining candidates
+            // check the model against the remaining candidates
             auto& model = ownSolver->model;
             for (int32_t j = 0; j < model.size(); ++j) {
                 assert(model[j] != l_Undef);

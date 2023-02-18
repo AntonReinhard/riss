@@ -4,12 +4,18 @@ Copyright (c) 2021, Anton Reinhard, LGPL v2, see LICENSE
 
 #pragma once
 
+#define CADICAL
+
 #include "coprocessor/CoprocessorTypes.h"
 #include "coprocessor/Technique.h"
 #include "coprocessor/techniques/BackboneSimplification.h"
 #include "coprocessor/techniques/Probing.h"
 #include "coprocessor/techniques/Propagation.h"
 #include "riss/core/Solver.h"
+
+#ifdef CADICAL
+#include <cadical.hpp>
+#endif
 
 #include <memory>
 #include <set>
@@ -29,15 +35,22 @@ namespace Coprocessor {
         const int nVar;
         const int maxRes;
 
-        Riss::Solver* ownSolver;
+#if defined(CADICAL)
+        CaDiCaL::Solver* ownSolver;
+        std::string solverSignature = "CaDiCal";
+#else
+        Riss::Solver* ownSolver;        
         Coprocessor::CP3Config* cp3config;
         Riss::CoreConfig* solverconfig;
         Riss::vec<Riss::Lit> assumptions; // current set of assumptions that are used for the next SAT call
 
+        std::string solverSignature = "Riss";
+#endif
+
         int conflictBudget;         // how many conflicts is the solver allowed to have before aborting the search for a model
         std::vector<bool> varUsed;  // "map" from variable to whether it is used in the solver, i.e. whether it is not a unit
-        GROUPED grouped = GROUPED::CONJUNCTIVE;
-        int groupSize = 64;              // literal grouping size
+        GROUPED grouped;
+        int groupSize;              // literal grouping size
 
         // statistic variables
         int nDeletedVars;
@@ -68,6 +81,7 @@ namespace Coprocessor {
             UNCONFIRMED,
             INPUT,
             OUTPUT,
+            BACKBONE,       //backbone variables are propagated, they are always output variables
             COUNT
         };
         // bitmap of variables, every variable starts as "unconfirmed"

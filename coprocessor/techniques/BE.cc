@@ -10,6 +10,10 @@ Copyright (c) 2021, Anton Reinhard, LGPL v2, see LICENSE
 #include "coprocessor/techniques/Propagation.h"
 #include "riss/core/SolverTypes.h"
 
+#ifdef CADICAL
+#include <cadical.hpp>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -70,12 +74,15 @@ namespace Coprocessor {
     }
 
     void BE::destroy() {
+#ifndef CADICAL
         delete solverconfig;
         delete cp3config;
-        delete ownSolver;
+#endif
+        delete ownSolver;        
     }
 
     void BE::printStatistics(std::ostream& stream) {
+        stream << "c [STAT] BE solver signature: " << solverSignature << "\n";
         stream << "c [STAT] BE maxres: " << maxRes << "\n";
         stream << "c [STAT] BE nConf: " << conflictBudget << "\n";
         stream << "c [STAT] BE deleted variables: " << nDeletedVars << "\n";
@@ -149,7 +156,7 @@ namespace Coprocessor {
         auto& backbone = backboneSimpl.getBackbone();
         inOutVariables.resize(solver.nVars(), InputOutputState::UNCONFIRMED);
         for (const auto& lit : backbone) {
-            inOutVariables[var(lit)] = InputOutputState::OUTPUT;
+            inOutVariables[var(lit)] = InputOutputState::BACKBONE;
         }
 
         // line 2
@@ -176,14 +183,14 @@ namespace Coprocessor {
         const int usedVars = varQueue.size();
         while (!varQueue.empty()) {
             if (grouped != GROUPED::NOT && lookedAtVars >= groupBudget) {
-                std::cout << "Decreasing group size to " << groupSize / 2 << " after " << lookedAtVars << " variables looked at" << std::endl;
-
                 // decrease group size
                 groupSize /= 2;
 
                 // reset budget
                 groupBudget = varQueue.size();
                 lookedAtVars = 0;
+
+                std::cout << "Decreasing group size to " << groupSize << ", " << groupBudget << " variables left" << std::endl;
 
                 if (groupSize == 1) {
                     grouped = GROUPED::NOT;
@@ -209,17 +216,17 @@ namespace Coprocessor {
                 if (inOutVariables[v] == InputOutputState::UNCONFIRMED) {
                     varQueue.push(v);
                 }
-                assert(!(groupSize > 1 && grouped == GROUPED::CONJUNCTIVE && inOutVariables[v] == InputOutputState::OUTPUT));
+                assert(!(groupSize > 1 && grouped == GROUPED::CONJUNCTIVE && (inOutVariables[v] == InputOutputState::OUTPUT || inOutVariables[v] == InputOutputState::BACKBONE)));
             }
         }
 
         outputVariables.reserve(backbone.size());
         for (auto i = 0; i < solver.nVars(); ++i) {
-            if (inOutVariables[i] == InputOutputState::OUTPUT) {
+            if (inOutVariables[i] == InputOutputState::OUTPUT) { // ignore backbone variables here
                 outputVariables.push_back(i);
             }
         }
-        eliminationCandidates = outputVariables.size() - solver.trail.size();
+        eliminationCandidates = outputVariables.size();
     }
 
     void BE::eliminate() {
@@ -377,40 +384,67 @@ namespace Coprocessor {
 
         Riss::vec<Lit> assumptions;
 
+        auto add_assumption = [&](Riss::Lit l){
+#if defined(CADICAL)
+            ownSolver->assume((var(l) + 1) * (sign(l) ? -1 : 1));
+#else
+            assumptions.push(l);
+#endif
+        };
+
         // add assumption sZ for every UNCONFIRMED or INPUT variable ("vars" variables are output at this point)
         for (auto i = 1; i < nVar; ++i) {
             if (inOutVariables[i] == InputOutputState::INPUT || inOutVariables[i] == InputOutputState::UNCONFIRMED) {
-                assumptions.push(mkLit(i + (2 * nVar)));
+                add_assumption(mkLit(i + (2 * nVar)));
                 // sZ and sZ' exclude each other, might as well tell the solver
-                assumptions.push(mkLit(i + (3 * nVar), true));
+                add_assumption(mkLit(i + (3 * nVar), true));
             }
         }
 
         // add x and ~xprime unit clauses (breaking symmetry)
         if (groupSize == 1) {
             assert(vars.size() == 1);
-            assumptions.push(mkLit(vars[0]));
-            assumptions.push(mkLit(vars[0] + nVar, true));
+            add_assumption(mkLit(vars[0]));
+            add_assumption(mkLit(vars[0] + nVar, true));
         } else {
             // can't (or at least shouldn't) break symmetry with a larger group
             for (const auto& v : vars) {
                 // use the sZ' (+ nvars * 3)
-                assumptions.push(mkLit(v + (2 * nVar), true));
-                assumptions.push(mkLit(v + (3 * nVar)));
+                add_assumption(mkLit(v + (2 * nVar), true));
+                add_assumption(mkLit(v + (3 * nVar)));
             }
         }
 
-        // now set conflict budget
-        ownSolver->setConfBudget(conflictBudget);
-
-        ownSolver->assumptions.clear();
-
+        ++nSolverCalls;
         Riss::lbool res;
+
+        // now set conflict budget
+#if defined(CADICAL)
+        ownSolver->limit("conflicts", conflictBudget);
+
         {
             MethodTimer timer(&solverTime);
-            ++nSolverCalls;
+            switch (ownSolver->solve()) {
+            case 0:
+                res = l_Undef;
+                break;
+            case 10:
+                res = l_True;
+                break;
+            case 20:
+                res = l_False;
+                break;
+            }
+        }
+#else
+        ownSolver->setConfBudget(conflictBudget);
+        ownSolver->assumptions.clear();
+
+        {
+            MethodTimer timer(&solverTime);
             res = ownSolver->solveLimited(assumptions);
         }
+#endif
 
         if (groupSize == 1) {
             if (res == l_False) {
@@ -454,8 +488,17 @@ namespace Coprocessor {
                 return;
             }
 
-            if (res == l_True || res == l_Undef) {
+            if (res == l_True) {
                 // at least one variable is not defined -> find which
+#if defined(CADICAL)
+                for (const auto& v : vars) {
+                    if (ownSolver->val(v + nVar * 3)) {
+                        inOutVariables[v] = InputOutputState::INPUT;
+                    } else {
+                        inOutVariables[v] = InputOutputState::UNCONFIRMED;
+                    }
+                }
+#else
                 auto& model = ownSolver->model;
                 for (const auto& v : vars) {
                     if (model[v + nVar * 3] == l_True) {
@@ -464,6 +507,7 @@ namespace Coprocessor {
                         inOutVariables[v] = InputOutputState::UNCONFIRMED;
                     }
                 }
+#endif
                 return;
             }
         }
@@ -472,12 +516,6 @@ namespace Coprocessor {
     void BE::copySolver() {
         MethodTimer timer(&copyTime);
 
-        // init the solver
-        solverconfig = new Riss::CoreConfig("");
-        cp3config = new Coprocessor::CP3Config("-no-backbone -no-be");
-        ownSolver = new Riss::Solver(solverconfig);
-        ownSolver->setPreprocessor(cp3config);
-
         // -- copy the solver --
         // register variables
         // 1 * nVar for original variables
@@ -485,6 +523,71 @@ namespace Coprocessor {
         // 3 * nVar for the s_z variables from the paper (s_z true makes z == z')
         // 4 * nVar for extra s_z' variables -> (s_z true makes z != z') -> needed for literal grouping
         int nVars = nVar * ((groupSize >= 1) ? 4 : 3);
+#if defined(CADICAL)
+        ownSolver = new CaDiCaL::Solver();
+
+        for (std::size_t i = 0; i < data.getClauses().size(); ++i) {
+            const auto& clause = ca[data.getClauses()[i]];
+            for (int j = 0; j < clause.size(); ++j) {
+                varUsed[var(clause[j])] = true;
+                ownSolver->add((var(clause[j]) + 1) * (sign(clause[j]) ? -1 : 1));
+            }
+            ownSolver->add(0);  // end clause
+
+            for (int j = 0; j < clause.size(); ++j) {
+                ownSolver->add((var(clause[j]) + nVar + 1) * (sign(clause[j]) ? -1 : 1));
+            }
+            ownSolver->add(0);
+        }
+
+        for (int var = 1; var < solver.nVars() + 1; ++var) {
+            if (!varUsed[var - 1]) {
+                // no need to do this for unused variables
+                continue;
+            }
+
+            // z is var
+            const auto z = var;
+            const auto zP = var + nVar;
+            const auto sZ = var + 2 * nVar;
+            // z' is var + nVar
+            // s_z is var + 2 * nVar
+            // add two clauses:
+            // clause (~sZ, ~z, zP)
+            ownSolver->add(-sZ);
+            ownSolver->add(-z);
+            ownSolver->add(zP);
+            ownSolver->add(0);
+            
+            // clause (~sZ, z, ~zP)
+            ownSolver->add(-sZ);
+            ownSolver->add(z);
+            ownSolver->add(-zP);
+            ownSolver->add(0);
+
+            if (groupSize >= 1) {
+                // add two extra clauses for literal grouping
+                const auto sZP = var + nVar * 3;
+                // clause (~sZ', z, zP)
+                ownSolver->add(-sZP);
+                ownSolver->add(z);
+                ownSolver->add(zP);
+                ownSolver->add(0);
+                // clause (~sZ', ~z, ~zP)
+                ownSolver->add(-sZP);
+                ownSolver->add(-z);
+                ownSolver->add(-zP);
+                ownSolver->add(0);
+            }
+        }
+#else
+
+        // init the solver
+        solverconfig = new Riss::CoreConfig("");
+        cp3config = new Coprocessor::CP3Config("-no-backbone -no-be");
+        ownSolver = new Riss::Solver(solverconfig);
+        ownSolver->setPreprocessor(cp3config);
+
         for (auto i = 0; i < nVars; ++i) {
             ownSolver->newVar();
         }
@@ -549,6 +652,7 @@ namespace Coprocessor {
                 addedClause.clear();
             }
         }
+#endif
     }
 
     std::uint32_t BE::numRes(const Var& x) const {
@@ -745,11 +849,18 @@ namespace Coprocessor {
             }
 
             // only use bcp -> confbudget = 0
+#if defined(CADICAL)
+            ownSolver->limit("conflicts", 0);
+            lbool res = ownSolver->solve() == 20 ? l_False : l_True;  //only care about unsatisfiability
+#else
             ownSolver->setConfBudget(0);
             ownSolver->assumptions.clear();
+            lbool res = ownSolver->solveLimited(assumptions);
+#endif
 
             ++nSolverCalls;
-            if (ownSolver->solveLimited(assumptions) == l_False) {
+
+            if (res == l_False) {
                 // unsatisfiable -> remove x from the clause
                 c.remove_lit(x);
 
