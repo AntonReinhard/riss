@@ -6,6 +6,10 @@ Copyright (c) 2021, Anton Reinhard, LGPL v2, see LICENSE
 #include "coprocessor/ScopedDecisionLevel.h"
 #include "riss/core/SolverTypes.h"
 
+#ifdef CADICAL
+#include <cadical.hpp>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
@@ -56,7 +60,6 @@ namespace Coprocessor {
         , nGrouping(_config.opt_backbone_ngrouping)
         , nSolve(0)
         , unitsBefore(0)
-        , totalConflits(0)
         , timedOutCalls(0)
         , crossCheckRemovedLiterals(0)
         , copyTime(0)
@@ -68,8 +71,10 @@ namespace Coprocessor {
     }
 
     void BackboneSimplification::destroy() {
+#ifndef CADICAL
         delete solverconfig;
         delete cp3config;
+#endif
         delete ownSolver;
     }
 
@@ -77,7 +82,6 @@ namespace Coprocessor {
         destroy();
         backbone.clear();
         ran = false;
-        totalConflits = 0;
         timedOutCalls = 0;
         crossCheckRemovedLiterals = 0;
         copyTime = 0;
@@ -90,13 +94,13 @@ namespace Coprocessor {
     }
 
     void BackboneSimplification::printStatistics(std::ostream& stream) {
+        stream << "c [STAT] BACKBONE solver signature: " << solverSignature << std::endl;
         stream << "c [STAT] BACKBONE max nconf: " << conflictBudget << std::endl;
         stream << "c [STAT] BACKBONE nGrouping: " << nGrouping << std::endl;
         stream << "c [STAT] BACKBONE grouping strat: " << groupingToString(grouping) << std::endl;
         stream << "c [STAT] BACKBONE sorting strat: " << sortingToString(likelihood_heuristic) << std::endl;
         stream << "c [STAT] BACKBONE found variables: " << backbone.size() - unitsBefore << std::endl;
         stream << "c [STAT] BACKBONE units before: " << unitsBefore << std::endl;
-        stream << "c [STAT] BACKBONE nConf: " << totalConflits << std::endl;
         stream << "c [STAT] BACKBONE timed out calls: " << timedOutCalls << std::endl;
         stream << "c [STAT] BACKBONE removed literals through found model: " << crossCheckRemovedLiterals << std::endl;
         stream << "c [STAT] BACKBONE time copying: " << copyTime << std::endl;
@@ -154,6 +158,29 @@ namespace Coprocessor {
 
         MethodTimer timer(&searchTime);
 
+        // backbone Candidate vector
+        std::vector<Lit> possibleBackboneLiterals;
+#if defined(CADICAL)
+
+        int ret;
+        {
+            MethodTimer t(&solverTime);
+            ret = ownSolver->solve();
+        }
+
+        if (ret != 10) {
+            std::cerr << "c Unsatisfiable" << std::endl;
+            return;
+        }
+
+        for (int32_t i = 0; i < solver.nVars(); ++i) {
+            if (ownSolver->val(i + 1)) {
+                possibleBackboneLiterals.emplace_back(mkLit(i, false));
+            } else {
+                possibleBackboneLiterals.emplace_back(mkLit(i, true));
+            }
+        }
+#else
         // set conflict budget to infinity
         ownSolver->budgetOff();
 
@@ -170,10 +197,6 @@ namespace Coprocessor {
             return;
         }
 
-        // add literals from the model to potentially be part of the backbone
-        std::vector<Lit> possibleBackboneLiterals;
-        possibleBackboneLiterals.reserve(ownSolver->model.size());
-
         for (int32_t i = 0; i < ownSolver->model.size(); ++i) {
             assert(ownSolver->model[i] != l_Undef);
             if (ownSolver->model[i] == l_True) {
@@ -182,6 +205,7 @@ namespace Coprocessor {
                 possibleBackboneLiterals.emplace_back(mkLit(i, true));
             }
         }
+#endif
 
         std::queue<Lit> litsToCheck;
         {
@@ -238,8 +262,8 @@ namespace Coprocessor {
 
             if (nGrouping > 1 && lookedAtVars > groupBudget) {
                 nGrouping = nGrouping / 2;
-                
-                //reset group budget and lookedAtVars
+
+                // reset group budget and lookedAtVars
                 lookedAtVars = 0;
                 groupBudget = litsToCheck.size();
 
@@ -250,10 +274,14 @@ namespace Coprocessor {
                 }
             }
 
+#if defined(CADICAL)
+            ownSolver->limit("conflicts", conflictBudget);
+#else
             ownSolver->model.clear();
 
             // now set conflict budget
             ownSolver->setConfBudget(conflictBudget);
+#endif
 
             // get new model
             switch (grouping) {
@@ -283,20 +311,48 @@ namespace Coprocessor {
 
             {
                 MethodTimer t(&solverTime);
+                ++nSolve;
+
+#if defined(CADICAL)
+                int res;
+                if (grouping == GROUPED::DISJUNCTIVE && unitLit.size() > 1) {
+                    // add constraint clause
+                    for (auto i = 0; i < unitLit.size(); ++i) {
+                        ownSolver->constrain((var(unitLit[i]) + 1) * (sign(unitLit[i]) ? -1 : 1));
+                    }
+                    ownSolver->constrain(0);
+                    res = ownSolver->solve();
+                } else {
+                    // add assumptions
+                    for (auto i = 0; i < unitLit.size(); ++i) {
+                        ownSolver->assume((var(unitLit[i]) + 1) * (sign(unitLit[i]) ? -1 : 1));
+                    }
+                    res = ownSolver->solve();
+                }
+                switch (res) {
+                case 0:
+                    solveResult = l_Undef;
+                    break;
+                case 10:
+                    solveResult = l_True;
+                    break;
+                case 20:
+                    solveResult = l_False;
+                    break;
+                }
+#else
                 if (grouping == GROUPED::DISJUNCTIVE && unitLit.size() > 1) {
                     // for disjunctive, add a new clause with all the "units" and remove it afterwards
                     ScopedDecisionLevel dec(*ownSolver);
                     ownSolver->integrateNewClause(unitLit);
                     solveResult = ownSolver->solveLimited({});
                     // newly integrated clauses are at the end
-
                 } else {
                     solveResult = ownSolver->solveLimited(unitLit);
                 }
-                ++nSolve;
+                ownSolver->assumptions.clear();
+#endif
             }
-
-            ownSolver->assumptions.clear();
 
             if (solveResult == l_False) {
                 switch (grouping) {
@@ -336,6 +392,18 @@ namespace Coprocessor {
             }
 
             // check the model against the remaining candidates
+#if defined(CADICAL)
+            for (int32_t j = 0; j < solver.nVars(); ++j) {
+                if (possibleBackboneLiterals[j].x == -1) {
+                    continue;
+                }
+                // check if signs are different
+                if (sign(possibleBackboneLiterals[j]) == ownSolver->val(j + 1)) {
+                    possibleBackboneLiterals[j].x = -1;
+                    ++crossCheckRemovedLiterals;
+                }
+            }
+#else
             auto& model = ownSolver->model;
             for (int32_t j = 0; j < model.size(); ++j) {
                 assert(model[j] != l_Undef);
@@ -348,15 +416,28 @@ namespace Coprocessor {
                     ++crossCheckRemovedLiterals;
                 }
             }
+#endif
         }
 
         ran = true;
-        totalConflits = ownSolver->conflicts;
     }
 
     void BackboneSimplification::copySolver() {
         MethodTimer timer(&copyTime);
 
+#if defined(CADICAL)
+        ownSolver = new CaDiCaL::Solver();
+
+        // copy clauses
+        for (std::size_t i = 0; i < solver.clauses.size(); ++i) {
+            const auto& clause = ca[solver.clauses[i]];
+            for (int j = 0; j < clause.size(); ++j) {
+                ownSolver->add((var(clause[j]) + 1) * (sign(clause[j]) ? -1 : 1));
+                varUsed[var(clause[j])] = true;
+            }
+            ownSolver->add(0);
+        }
+#else
         // init the solver
         solverconfig = new Riss::CoreConfig("");
         cp3config = new Coprocessor::CP3Config("-no-backbone -no-be");
@@ -380,11 +461,12 @@ namespace Coprocessor {
             ownSolver->integrateNewClause(assembledClause);
             assembledClause.clear();
         }
+#endif
 
         for (std::size_t i = 0; i < solver.trail.size(); ++i) {
             backbone.emplace_back(solver.trail[i]);
         }
-        
+
         unitsBefore = backbone.size();
 
         for (const auto& it : varUsed) {
@@ -435,12 +517,16 @@ namespace Coprocessor {
 
         switch (likelihood_heuristic) {
         case LIKELIHOOD_HEURISTIC::MULT:
-            if (xneg == 0 || xpos == 0) likelihood = 1000000;
-            else likelihood = 1. / (xpos * xneg);
+            if (xneg == 0 || xpos == 0)
+                likelihood = 1000000;
+            else
+                likelihood = 1. / (xpos * xneg);
             break;
         case LIKELIHOOD_HEURISTIC::DIV:
-            if (xneg == 0 || xpos == 0) likelihood = 1000000;
-            else likelihood = (xpos > xneg) ? static_cast<double>(xpos) / xneg : static_cast<double>(xneg) / xpos;
+            if (xneg == 0 || xpos == 0)
+                likelihood = 1000000;
+            else
+                likelihood = (xpos > xneg) ? static_cast<double>(xpos) / xneg : static_cast<double>(xneg) / xpos;
             break;
         default:
             assert(false);

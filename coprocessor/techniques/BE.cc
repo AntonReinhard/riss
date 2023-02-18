@@ -492,7 +492,7 @@ namespace Coprocessor {
                 // at least one variable is not defined -> find which
 #if defined(CADICAL)
                 for (const auto& v : vars) {
-                    if (ownSolver->val(v + nVar * 3)) {
+                    if (ownSolver->val(v + 1 + nVar * 3)) {
                         inOutVariables[v] = InputOutputState::INPUT;
                     } else {
                         inOutVariables[v] = InputOutputState::UNCONFIRMED;

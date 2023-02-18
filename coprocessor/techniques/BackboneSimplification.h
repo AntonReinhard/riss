@@ -4,10 +4,16 @@ Copyright (c) 2021, Anton Reinhard, LGPL v2, see LICENSE
 
 #pragma once
 
+#define CADICAL
+
 #include "coprocessor/CoprocessorTypes.h"
 #include "coprocessor/Technique.h"
 #include "coprocessor/techniques/Propagation.h"
 #include "riss/core/Solver.h"
+
+#ifdef CADICAL
+#include <cadical.hpp>
+#endif
 
 #include <memory>
 #include <set>
@@ -33,10 +39,18 @@ namespace Coprocessor {
         Propagation& propagation;
         Solver& solver;
 
-        Riss::Solver* ownSolver;
+
+#if defined(CADICAL)
+        CaDiCaL::Solver* ownSolver;
+        std::string solverSignature = "CaDiCal";
+#else
+        Riss::Solver* ownSolver;        
         Coprocessor::CP3Config* cp3config;
         Riss::CoreConfig* solverconfig;
         Riss::vec<Riss::Lit> assumptions; // current set of assumptions that are used for the next SAT call
+
+        std::string solverSignature = "Riss";
+#endif
 
         std::vector<Lit> backbone;
         std::vector<bool> varUsed; // "map" from variable to whether it is used in the solver, i.e. whether it is not a unit
@@ -52,7 +66,6 @@ namespace Coprocessor {
 
         int nSolve;      // number of solve calls done
         int unitsBefore; // number of units before backbone was called
-        int totalConflits;
         int timedOutCalls;
         int crossCheckRemovedLiterals;
         double copyTime;
