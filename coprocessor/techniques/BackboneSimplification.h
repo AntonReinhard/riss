@@ -4,8 +4,6 @@ Copyright (c) 2021, Anton Reinhard, LGPL v2, see LICENSE
 
 #pragma once
 
-#define CADICAL
-
 #include "coprocessor/CoprocessorTypes.h"
 #include "coprocessor/Technique.h"
 #include "coprocessor/techniques/Propagation.h"

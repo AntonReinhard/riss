@@ -17,6 +17,7 @@ Copyright (c) 2021, Anton Reinhard, LGPL v2, see LICENSE
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <functional>
 #include <map>
 
 using namespace Riss;
@@ -34,7 +35,8 @@ namespace {
             return "unknown";
         }
     }
-}
+
+} // namespace
 
 namespace Coprocessor {
 
@@ -49,9 +51,9 @@ namespace Coprocessor {
         , nVar(solver.nVars())
         , maxRes(_config.opt_be_maxres)
         , conflictBudget(_config.opt_be_nconf)
+        , varUsed(solver.nVars(), false)
         , grouped(static_cast<GROUPED>((int)_config.opt_be_grouping))
         , groupSize(_config.opt_be_ngrouping)
-        , varUsed(solver.nVars(), false)
         , nDeletedVars(0)
         , copyTime(0)
         , bipartitionTime(0)
@@ -78,7 +80,7 @@ namespace Coprocessor {
         delete solverconfig;
         delete cp3config;
 #endif
-        delete ownSolver;        
+        delete ownSolver;
     }
 
     void BE::printStatistics(std::ostream& stream) {
@@ -123,8 +125,19 @@ namespace Coprocessor {
         }
 
         if (grouped == GROUPED::NOT) {
-            groupSize = 1;
+            if (groupSize != 1) {
+                std::cout << "c [BE] Warning: grouping size != 1 used without grouping strategy, reverting to size 1\n";
+                groupSize = 1;
+            }
         }
+
+#ifndef CADICAL
+        if (grouped == GROUPED::DISJUNCTIVE) {
+            std::cout << "c [BE] Error: disjunctive grouping not available without CADICAL, skipping BE\n";
+            ran = true;
+            return false;
+        }
+#endif
 
         computeBipartition();
 
@@ -216,7 +229,8 @@ namespace Coprocessor {
                 if (inOutVariables[v] == InputOutputState::UNCONFIRMED) {
                     varQueue.push(v);
                 }
-                assert(!(groupSize > 1 && grouped == GROUPED::CONJUNCTIVE && (inOutVariables[v] == InputOutputState::OUTPUT || inOutVariables[v] == InputOutputState::BACKBONE)));
+                assert(!(groupSize > 1 && grouped == GROUPED::CONJUNCTIVE &&
+                         (inOutVariables[v] == InputOutputState::OUTPUT || inOutVariables[v] == InputOutputState::BACKBONE)));
             }
         }
 
@@ -384,7 +398,7 @@ namespace Coprocessor {
 
         Riss::vec<Lit> assumptions;
 
-        auto add_assumption = [&](Riss::Lit l){
+        auto add_assumption = [&](Riss::Lit l) {
 #if defined(CADICAL)
             ownSolver->assume((var(l) + 1) * (sign(l) ? -1 : 1));
 #else
@@ -392,12 +406,28 @@ namespace Coprocessor {
 #endif
         };
 
+        auto add_constraint = [&](Riss::Lit l) {
+#if defined(CADICAL)
+            ownSolver->constrain((var(l) + 1) * (sign(l) ? -1 : 1));
+#else
+            assert(false);
+#endif
+        };
+
+        auto finish_constraint = [&]() {
+#if defined(CADICAL)
+            ownSolver->constrain(0);
+#else
+            assert(false);
+#endif
+        };
+
         // add assumption sZ for every UNCONFIRMED or INPUT variable ("vars" variables are output at this point)
         for (auto i = 1; i < nVar; ++i) {
             if (inOutVariables[i] == InputOutputState::INPUT || inOutVariables[i] == InputOutputState::UNCONFIRMED) {
-                add_assumption(mkLit(i + (2 * nVar)));
+                add_assumption(mkLit(i + (2 * nVar))); // ==
                 // sZ and sZ' exclude each other, might as well tell the solver
-                add_assumption(mkLit(i + (3 * nVar), true));
+                add_assumption(mkLit(i + (3 * nVar), true)); // !=
             }
         }
 
@@ -407,11 +437,25 @@ namespace Coprocessor {
             add_assumption(mkLit(vars[0]));
             add_assumption(mkLit(vars[0] + nVar, true));
         } else {
-            // can't (or at least shouldn't) break symmetry with a larger group
-            for (const auto& v : vars) {
-                // use the sZ' (+ nvars * 3)
-                add_assumption(mkLit(v + (2 * nVar), true));
-                add_assumption(mkLit(v + (3 * nVar)));
+            switch (grouped) {
+            case GROUPED::CONJUNCTIVE:
+                // can't (or at least shouldn't) break symmetry with a larger group
+                for (const auto& v : vars) {
+                    // use the sZ' (+ nvars * 3)
+                    add_assumption(mkLit(v + (2 * nVar), true)); // ==
+                    add_assumption(mkLit(v + (3 * nVar)));       // !=
+                }
+                break;
+            case GROUPED::DISJUNCTIVE:
+                for (const auto& v : vars) {
+                    // use the sZ' (+ nvars * 3)
+                    // add_constraint(mkLit(v + (2 * nVar), true));  // == can't add this because it's a clause
+                    add_constraint(mkLit(v + (3 * nVar))); // !=
+                }
+                finish_constraint();
+                break;
+            case GROUPED::NOT:
+                break;
             }
         }
 
@@ -474,7 +518,7 @@ namespace Coprocessor {
                 for (const auto& v : vars) {
                     inOutVariables[v] = InputOutputState::INPUT;
                 }
-                std::cout << "c Yay, removed " << vars.size() << " variables at once" << std::endl;
+                std::cout << "c removed " << vars.size() << " variables at once" << std::endl;
                 return;
             }
         }
@@ -532,7 +576,7 @@ namespace Coprocessor {
                 varUsed[var(clause[j])] = true;
                 ownSolver->add((var(clause[j]) + 1) * (sign(clause[j]) ? -1 : 1));
             }
-            ownSolver->add(0);  // end clause
+            ownSolver->add(0); // end clause
 
             for (int j = 0; j < clause.size(); ++j) {
                 ownSolver->add((var(clause[j]) + nVar + 1) * (sign(clause[j]) ? -1 : 1));
@@ -558,7 +602,7 @@ namespace Coprocessor {
             ownSolver->add(-z);
             ownSolver->add(zP);
             ownSolver->add(0);
-            
+
             // clause (~sZ, z, ~zP)
             ownSolver->add(-sZ);
             ownSolver->add(z);
@@ -678,7 +722,12 @@ namespace Coprocessor {
         for (std::size_t i = 0; i < data.getClauses().size(); ++i) {
             const auto& clause = ca[data.getClauses()[i]];
             const Lit* lit = (const Lit*)(clause);
+
             for (int j = 0; j < clause.size(); ++j) {
+                if (lit[j] > nX) {  // assume clauses are sorted
+                    break;
+                }
+
                 if (lit[j] == pX) {
                     ++xpos;
                     // no need to check rest of clause
@@ -770,47 +819,49 @@ namespace Coprocessor {
     void BE::subsume(std::vector<std::vector<Lit>>& clauses) const {
         MethodTimer timer(&subsumptionTime);
         ++nSubsumption;
-        // remember if something is subsumed
-        std::vector<bool> isSubsumed(clauses.size(), false);
 
-        for (std::size_t i = 0; i < clauses.size(); ++i) {
+        const auto c_size = clauses.size();
+        // remember if something is subsumed
+        std::vector<std::uint8_t> isSubsumed(c_size, false);
+        
+
+        for (std::size_t i = 0; i < c_size; ++i) {
             if (isSubsumed[i]) {
                 continue;
             }
-            for (std::size_t j = i + 1; j < clauses.size(); ++j) {
+            for (std::size_t j = i + 1; j < c_size; ++j) {
                 if (isSubsumed[j]) {
                     continue;
                 }
 
                 if (subsumes(clauses[i], clauses[j])) { // i subsumes j
                     isSubsumed[j] = true;
-                    continue; // if i subsumes j, don't check if j subsumes i
-                    // because if they subsume each other then they are equal, in which case we can only remove one, not both
                 }
-                if (subsumes(clauses[j], clauses[i])) { // j subsumes i
+                else if (subsumes(clauses[j], clauses[i])) { // j subsumes i
                     isSubsumed[i] = true;
                 }
             }
         }
 
         // check for subsumptions by the original clauses
+        std::vector<Riss::Lit> clause;
         for (std::size_t i = 0; i < data.getClauses().size(); ++i) {
             const auto& c = ca[data.getClauses()[i]];
+
             const Lit* lit = (const Lit*)(c);
-            std::vector<Riss::Lit> clause;
+            clause.resize(c.size());
             for (int j = 0; j < c.size(); ++j) {
-                clause.emplace_back(lit[j]);
+                clause[j] = lit[j];
             }
 
-            for (std::size_t j = 0; j < clauses.size(); ++j) {
+            for (std::size_t j = 0; j < c_size; ++j) {
                 if (isSubsumed[j]) {
                     continue;
                 }
 
                 if (subsumes(clause, clauses[j])) { // i subsumes j
                     isSubsumed[j] = true;
-                    continue; // if i subsumes j, don't check if j subsumes i
-                    // because if they subsume each other then they are equal, in which case we can only remove one, not both
+                    continue;
                 }
             }
         }
@@ -851,7 +902,7 @@ namespace Coprocessor {
             // only use bcp -> confbudget = 0
 #if defined(CADICAL)
             ownSolver->limit("conflicts", 0);
-            lbool res = ownSolver->solve() == 20 ? l_False : l_True;  //only care about unsatisfiability
+            lbool res = ownSolver->simplify(0) == 20 ? l_False : l_True; // only care about unsatisfiability
 #else
             ownSolver->setConfBudget(0);
             ownSolver->assumptions.clear();
@@ -875,20 +926,29 @@ namespace Coprocessor {
     }
 
     bool BE::subsumes(std::vector<Lit>& a, std::vector<Lit>& b) const {
-        for (const auto& litA : a) {
-            bool found = false;
-            for (const auto& litB : b) {
-                if (litA == litB) {
-                    found = true;
-                    break;
-                }
-            }
+        const auto a_s = a.size();
+        const auto b_s = b.size();
 
-            if (!found) {
+        if (a_s > b_s) return false;
+        
+        int i = 0, j = 0;
+        while (i < a_s && j < b_s) {
+            if (a[i] == b[j]) {
+                ++i;
+                ++j;
+            }
+            // D does not contain c[i]
+            else if (a[i] < b[j]) {
                 return false;
+            } else {
+                ++j;
             }
         }
-        return true;
+        if (i == a_s) {
+            return true;
+        } else {
+            return false;
+        }
     }
 
     void BE::printLitVec(const std::vector<Lit>& lits) const {

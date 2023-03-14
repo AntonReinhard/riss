@@ -193,7 +193,7 @@ fi
 # Simplify formula to an equivalent one
 echo "c start simplification ..."
 declare -i SIMPLIFY_STATUS=0
-"$COPROCESSOR" "$WEIGHT_FREE_CNF" \
+valgrind --tool=callgrind -v --dump-every-bb=100000000 "$COPROCESSOR" "$WEIGHT_FREE_CNF" \
     $COPROCESSOR_EXTRA_ARGS \
     -whiteList="$WHITE_FILE" \
     -dimacs="$SIMPLIFIED_CNF" \
@@ -203,10 +203,13 @@ declare -i SIMPLIFY_STATUS=0
     -no-bce \
     -no-xor \
     -no-ee \
+    -no-fm \
     -backbone \
     -backbone_grouping=1 \
     -backbone_ngrouping=32 \
     -be \
+    -be_grouping=1 \
+    -be_ngrouping=32 \
     -search=0 \
     || SIMPLIFY_STATUS=$?
 echo "c simplification returned with $SIMPLIFY_STATUS"

@@ -67,6 +67,7 @@ option(FPIC            "Build shared library with -fpic" OFF)
 option(FLTO            "Build code with FLTO" OFF)
 option(ERROR           "Turn warnings into errors" OFF)
 option(QUIET           "Disable all #warnings" OFF)
+option(CADICAL         "Use Cadical for backbone and bipartition instead of riss" OFF)
 
 # Print option settings
 message(STATUS "Build type ${CMAKE_BUILD_TYPE}")
@@ -88,6 +89,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib)
 
 # Tell CMake where to look for additional CMake modules
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
+
+if(CADICAL)
+  add_compile_definitions(CADICAL)
+endif()
 
 # Link only to static libs (incl. libc and others)
 if(STATIC_BINARIES)
@@ -122,7 +127,8 @@ include(GitSignature)
 
 # Compile flags:
 # 
-add_definitions("-D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -std=c++11 -g -DNDBG")
+set(CMAKE_CXX_STANDARD 20)
+add_definitions("-D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -g -DNDBG")
 
 # Link time optimization command line parameters
 if(FLTO)

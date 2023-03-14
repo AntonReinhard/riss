@@ -54,7 +54,12 @@ set_target_properties(coprocessor-lib-shared PROPERTIES
                                              VERSION ${VERSION}
                                              SOVERSION ${SOVERSION})
 
-target_link_libraries(coprocessor-lib-static riss-lib-static cadical)
+target_link_libraries(coprocessor-lib-static riss-lib-static)
+
+if (CADICAL)
+  target_link_libraries(coprocessor-lib-static cadical)
+endif()
+
 git_signature(PROJECT_NAME "coprocessor"
               SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/version.cmake
               DESTINATION ${VERSION_CC}
@@ -66,9 +71,13 @@ git_signature(PROJECT_NAME "coprocessor"
 add_executable(coprocessor Main.cc)
 
 if(STATIC_BINARIES)
-  target_link_libraries(coprocessor riss-lib-static coprocessor-lib-static cadical)
+  target_link_libraries(coprocessor riss-lib-static coprocessor-lib-static)
 else()
-  target_link_libraries(coprocessor riss-lib-shared coprocessor-lib-shared cadical)
+  target_link_libraries(coprocessor riss-lib-shared coprocessor-lib-shared)
+endif()
+
+if (CADICAL)
+  target_link_libraries(coprocessor cadical)
 endif()
 
 # Installation:
