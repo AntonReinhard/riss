@@ -32,9 +32,9 @@ rm $SHARPSAT_TMPDIR/* > /dev/null 2>&1
 coprocessor() {
   echo "Running Coprocessor..."
   CPSTART=`date +%s.%N`
-  taskset -c 0 ./coprocessor-for-modelcounting.sh -o $TMP_CNF $INPUT $SOLVERCALL > $COPROC_LOG 2>&1
+  ./coprocessor-for-modelcounting.sh -o $TMP_CNF $INPUT $SOLVERCALL > $COPROC_LOG 2>&1
   echo "Solving Coprocessor Output..."
-  taskset -c 0 "$SOLVER" "$SOLVERARGS" -tmpdir $SHARPSAT_TMPDIR1 $TMP_CNF > $COPROC_SOL 2>&1
+  "$SOLVER" "$SOLVERARGS" -tmpdir $SHARPSAT_TMPDIR1 $TMP_CNF > $COPROC_SOL 2>&1
   CPEND=`date +%s.%N`
   CP_TIME=$( echo "$CPEND - $CPSTART" | bc -l )
   echo "$CP_TIME" > $COPROC_TIME
@@ -44,7 +44,7 @@ coprocessor() {
 reference() {
   echo "Running Reference..."
   REFSTART=`date +%s.%N`
-  taskset -c 2 "$SOLVER" "$SOLVERARGS" -tmpdir $SHARPSAT_TMPDIR2 $INPUT > $EXPECTED_SOL 2>&1
+  "$SOLVER" "$SOLVERARGS" -tmpdir $SHARPSAT_TMPDIR2 $INPUT > $EXPECTED_SOL 2>&1
   REFEND=`date +%s.%N`
   REF_TIME=$( echo "$REFEND - $REFSTART" | bc -l )
   echo "$REF_TIME" > $EXPECTED_TIME

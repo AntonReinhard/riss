@@ -36,7 +36,115 @@ namespace {
         }
     }
 
+    bool subsumes(const CRef a, const std::vector<Lit>& b, const Riss::ClauseAllocator& ca) {
+        const auto& ac = ca[a];
+        const auto a_s = ac.size();
+        const auto b_s = b.size();
+
+        if (a_s > b_s)
+            return false;
+
+        int i = 0, j = 0;
+        while (i < a_s && j < b_s) {
+            if (ac[i] == b[j]) {
+                ++i;
+                ++j;
+            }
+            // D does not contain c[i]
+            else if (ac[i] < b[j]) {
+                return false;
+            } else {
+                ++j;
+            }
+        }
+        if (i == a_s) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    bool subsumes(const std::vector<Lit>& a, const std::vector<Lit>& b) {
+        const auto a_s = a.size();
+        const auto b_s = b.size();
+
+        if (a_s > b_s)
+            return false;
+
+        int i = 0, j = 0;
+        while (i < a_s && j < b_s) {
+            if (a[i] == b[j]) {
+                ++i;
+                ++j;
+            }
+            // D does not contain c[i]
+            else if (a[i] < b[j]) {
+                return false;
+            } else {
+                ++j;
+            }
+        }
+        if (i == a_s) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
 } // namespace
+
+ClauseLookupTable::ClauseLookupTable(const Riss::ClauseAllocator& _ca, const Riss::Solver& _solver)
+    : solver(_solver)
+    , ca(_ca) {
+}
+
+inline void ClauseLookupTable::init() {
+    for (auto i = 0; i < solver.nVars(); ++i) {
+        clause_sets.emplace(std::pair<int, std::unordered_set<CRef>>(mkLit(i, false).x, {}));
+        clause_sets.emplace(std::pair<int, std::unordered_set<CRef>>(mkLit(i, true).x, {}));
+    }
+
+    for (std::size_t i = 0; i < solver.clauses.size(); ++i) {
+        addClause(solver.clauses[i]);
+    }
+}
+
+inline void ClauseLookupTable::addClause(const CRef c) {
+    const auto& clause = ca[c];
+    for (int i = 0; i < clause.size(); ++i) {
+        clause_sets[clause[i].x].insert(c);
+    }
+}
+
+inline void ClauseLookupTable::removeClause(const CRef c) {
+    const auto& clause = ca[c];
+    for (int i = 0; i < clause.size(); ++i) {
+        clause_sets[clause[i].x].erase(c);
+    }
+}
+
+bool ClauseLookupTable::isSubsumed(const std::vector<Lit>& clause) const {
+    for (const auto& lit : clause) {
+        for (const auto& c : clause_sets.at(lit.x)) {
+            if (subsumes(c, clause, ca)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+int ClauseLookupTable::numberOfClausesContaining(const Riss::Lit& l) const {
+    return clause_sets.at(l.x).size();
+}
+
+std::vector<CRef> ClauseLookupTable::getClausesContaining(const Riss::Lit& l) const {
+    std::vector<CRef> clauses;
+    for (const auto& c : clause_sets.at(l.x)) {
+        clauses.emplace_back(c);
+    }
+    return clauses;
+}
 
 namespace Coprocessor {
 
@@ -69,7 +177,8 @@ namespace Coprocessor {
         , nSubsumption(0)
         , nGetRes(0)
         , nOccurrencesRemoved(0)
-        , dirtyCache(false) {
+        , dirtyCache(false)
+        , clt(_ca, _solver) {
     }
 
     void BE::giveMoreSteps() {
@@ -139,6 +248,8 @@ namespace Coprocessor {
         }
 #endif
 
+        clt.init();
+
         computeBipartition();
 
         eliminate();
@@ -149,7 +260,6 @@ namespace Coprocessor {
 
         static bool first = true;
         if (first) {
-            printStatistics(std::cerr);
             first = false;
         }
 
@@ -157,7 +267,7 @@ namespace Coprocessor {
     }
 
     void BE::computeBipartition() {
-        std::cout << "c Starting Bipartition" << std::endl;
+        std::cout << "c [BE] Starting Bipartition" << std::endl;
 
         copySolver();
 
@@ -203,7 +313,7 @@ namespace Coprocessor {
                 groupBudget = varQueue.size();
                 lookedAtVars = 0;
 
-                std::cout << "Decreasing group size to " << groupSize << ", " << groupBudget << " variables left" << std::endl;
+                std::cout << "c [BE] Decreasing group size to " << groupSize << ", " << groupBudget << " variables left" << std::endl;
 
                 if (groupSize == 1) {
                     grouped = GROUPED::NOT;
@@ -253,12 +363,12 @@ namespace Coprocessor {
         std::vector<Var> deletedVars;
 
         int changedVars = 100000;
-        const int minChange = 0.0001 * data.nVars() + 1;
+        const int minChange = 1;
 
         // line 3
         while (changedVars >= minChange) {
-            std::cout << "c top level iteration...\n";
             ++nTopLevelIterations;
+            std::cout << "c [BE] elimination top level iteration " << nTopLevelIterations << "\n";
 
             // line 4
             outputVariables = retrySet;
@@ -324,19 +434,21 @@ namespace Coprocessor {
 
                     // line 14
                     // if number of clauses in formula without x + ||R|| is less than current number of clauses
-                    auto posXClauses = getClausesContaining(mkLit(x, false));
-                    auto negXClauses = getClausesContaining(mkLit(x, true));
+                    auto posXClauses = clt.getClausesContaining(mkLit(x, false));
+                    auto negXClauses = clt.getClausesContaining(mkLit(x, true));
                     // we can assume that these don't overlap
 
                     if (posXClauses.size() + negXClauses.size() > R.size()) {
                         // actually do the elimination now
                         for (const auto& clause : posXClauses) {
+                            clt.removeClause(clause);
                             ca[clause].mark(1);
                             ca[clause].set_delete(true);
                             data.removedClause(clause);
                         }
 
                         for (const auto& clause : negXClauses) {
+                            clt.removeClause(clause);
                             ca[clause].mark(1);
                             ca[clause].set_delete(true);
                             data.removedClause(clause);
@@ -345,10 +457,7 @@ namespace Coprocessor {
                         data.lits.clear();
                         // add clauses from R
                         for (auto& c : R) {
-                            if (c.size() == 1) {
-                                std::cout << "Unit clause resolved!!" << std::endl;
-                            }
-                            assert(!c.empty());
+                            assert(c.size() > 1);
                             for (const auto& l : c) {
                                 data.lits.emplace_back(l);
                             }
@@ -357,6 +466,7 @@ namespace Coprocessor {
                             ca[newClause].sort();
                             data.addClause(newClause);
                             data.getClauses().push(newClause);
+                            clt.addClause(newClause);
 
                             data.lits.clear();
                         }
@@ -366,6 +476,7 @@ namespace Coprocessor {
                         Riss::CRef newClause = ca.alloc(data.lits, false);
                         data.addClause(newClause);
                         data.getClauses().push(newClause);
+                        clt.addClause(newClause);
 
                         data.lits.clear();
 
@@ -518,7 +629,6 @@ namespace Coprocessor {
                 for (const auto& v : vars) {
                     inOutVariables[v] = InputOutputState::INPUT;
                 }
-                std::cout << "c removed " << vars.size() << " variables at once" << std::endl;
                 return;
             }
         }
@@ -700,72 +810,16 @@ namespace Coprocessor {
     }
 
     std::uint32_t BE::numRes(const Var& x) const {
-        static std::map<Var, std::uint32_t> cache;
-
-        if (dirtyCache) {
-            cache.clear();
-            dirtyCache = false;
-        }
-
-        if (cache.find(x) != cache.end()) {
-            return cache.at(x);
-        }
-
         // positive and negative x literal
         Lit pX = mkLit(x, false);
         Lit nX = mkLit(x, true);
 
         // find number of clauses where x appears positive/negative
-        std::uint32_t xpos = 0;
-        std::uint32_t xneg = 0;
-
-        for (std::size_t i = 0; i < data.getClauses().size(); ++i) {
-            const auto& clause = ca[data.getClauses()[i]];
-            const Lit* lit = (const Lit*)(clause);
-
-            for (int j = 0; j < clause.size(); ++j) {
-                if (lit[j] > nX) {  // assume clauses are sorted
-                    break;
-                }
-
-                if (lit[j] == pX) {
-                    ++xpos;
-                    // no need to check rest of clause
-                    continue;
-                }
-                if (lit[j] == nX) {
-                    ++xneg;
-                    // no need to check rest of clause
-                    continue;
-                }
-            }
-        }
-
-        cache.emplace(x, xpos * xneg);
+        const std::uint32_t xpos = clt.numberOfClausesContaining(pX);
+        const std::uint32_t xneg = clt.numberOfClausesContaining(nX);
 
         // maximum number of resolvents is every clause where x appears positive with every clause where x appears negative
         return xpos * xneg;
-    }
-
-    std::vector<Riss::CRef> BE::getClausesContaining(const Lit& x) const {
-        std::vector<Riss::CRef> resultClauses;
-
-        for (std::size_t i = 0; i < data.getClauses().size(); ++i) {
-            const auto& clause = ca[data.getClauses()[i]];
-            const Lit* lit = (const Lit*)(clause);
-            for (int j = 0; j < clause.size(); ++j) {
-                if (ca[data.getClauses()[i]].mark()) {
-                    continue;
-                }
-                if (lit[j] == x) {
-                    resultClauses.emplace_back(data.getClauses()[i]);
-                    // no need to check rest of clause
-                    break;
-                }
-            }
-        }
-
-        return resultClauses;
     }
 
     std::vector<std::vector<Lit>> BE::getResolvents(const Var& x) const {
@@ -775,35 +829,48 @@ namespace Coprocessor {
         auto negX = mkLit(x, true);
 
         // get all clauses containing x and all containing ~x
-        auto posClauses = this->getClausesContaining(posX);
-        auto negClauses = this->getClausesContaining(negX);
+        auto posClauses = clt.getClausesContaining(posX);
+        auto negClauses = clt.getClausesContaining(negX);
 
         std::vector<std::vector<Lit>> resolvents;
 
         // iterate through the clauses containing x/~x
         for (const auto& pC : posClauses) {
             const auto& posClause = ca[pC];
-            const Lit* posLit = (const Lit*)(posClause);
 
             for (const auto& nC : negClauses) {
                 const auto& negClause = ca[nC];
-                const Lit* negLit = (const Lit*)(negClause);
 
                 resolvents.emplace_back();
                 // put all literals from both clauses into the resolvent, except x and ~x respectively
                 auto& resolvent = resolvents.back();
 
-                for (std::size_t i = 0; i < posClause.size(); ++i) {
-                    if (posLit[i] != posX) {
-                        resolvent.emplace_back(posLit[i]);
-                    }
-                }
-                for (std::size_t i = 0; i < negClause.size(); ++i) {
-                    if (negLit[i] != negX) {
-                        // need to make sure to not add duplicate lits
-                        if (std::find(resolvent.begin(), resolvent.end(), negLit[i]) == resolvent.end()) {
-                            resolvent.emplace_back(negLit[i]);
+                // use zip method to make sure resolved clauses are sorted without having to sort
+                int pi = 0, ni = 0;
+
+                while (pi < posClause.size() || ni < negClause.size()) {
+                    if (pi < posClause.size() && ni < negClause.size()) {
+                        if (posClause[pi] < negClause[ni]) {
+                            if (posClause[pi] != posX && (resolvent.empty() || resolvent.back() != posClause[pi])) {
+                                resolvent.emplace_back(posClause[pi]);
+                            }
+                            ++pi;
+                        } else {
+                            if (negClause[ni] != negX && (resolvent.empty() || resolvent.back() != negClause[ni])) {
+                                resolvent.emplace_back(negClause[ni]);
+                            }
+                            ++ni;
                         }
+                    } else if (ni < negClause.size()) {
+                        if (negClause[ni] != negX && (resolvent.empty() || resolvent.back() != negClause[ni])) {
+                            resolvent.emplace_back(negClause[ni]);
+                        }
+                        ++ni;
+                    } else if (pi < posClause.size()) {
+                        if (posClause[pi] != posX && (resolvent.empty() || resolvent.back() != posClause[pi])) {
+                            resolvent.emplace_back(posClause[pi]);
+                        }
+                        ++pi;
                     }
                 }
 
@@ -823,7 +890,6 @@ namespace Coprocessor {
         const auto c_size = clauses.size();
         // remember if something is subsumed
         std::vector<std::uint8_t> isSubsumed(c_size, false);
-        
 
         for (std::size_t i = 0; i < c_size; ++i) {
             if (isSubsumed[i]) {
@@ -836,33 +902,15 @@ namespace Coprocessor {
 
                 if (subsumes(clauses[i], clauses[j])) { // i subsumes j
                     isSubsumed[j] = true;
-                }
-                else if (subsumes(clauses[j], clauses[i])) { // j subsumes i
+                } else if (subsumes(clauses[j], clauses[i])) { // j subsumes i
                     isSubsumed[i] = true;
                 }
             }
         }
 
-        // check for subsumptions by the original clauses
-        std::vector<Riss::Lit> clause;
-        for (std::size_t i = 0; i < data.getClauses().size(); ++i) {
-            const auto& c = ca[data.getClauses()[i]];
-
-            const Lit* lit = (const Lit*)(c);
-            clause.resize(c.size());
-            for (int j = 0; j < c.size(); ++j) {
-                clause[j] = lit[j];
-            }
-
-            for (std::size_t j = 0; j < c_size; ++j) {
-                if (isSubsumed[j]) {
-                    continue;
-                }
-
-                if (subsumes(clause, clauses[j])) { // i subsumes j
-                    isSubsumed[j] = true;
-                    continue;
-                }
+        for (auto i = 0; i < clauses.size(); ++i) {
+            if (!isSubsumed[i] && clt.isSubsumed(clauses[i])) {
+                isSubsumed[i] = true;
             }
         }
 
@@ -882,7 +930,7 @@ namespace Coprocessor {
         MethodTimer timer(&occurrenceSimplTime);
 
         bool changed = false;
-        auto clauses = getClausesContaining(x);
+        auto clauses = clt.getClausesContaining(x);
 
         for (auto& clause : clauses) {
 
@@ -922,32 +970,6 @@ namespace Coprocessor {
 
         if (changed) {
             dirtyCache = true;
-        }
-    }
-
-    bool BE::subsumes(std::vector<Lit>& a, std::vector<Lit>& b) const {
-        const auto a_s = a.size();
-        const auto b_s = b.size();
-
-        if (a_s > b_s) return false;
-        
-        int i = 0, j = 0;
-        while (i < a_s && j < b_s) {
-            if (a[i] == b[j]) {
-                ++i;
-                ++j;
-            }
-            // D does not contain c[i]
-            else if (a[i] < b[j]) {
-                return false;
-            } else {
-                ++j;
-            }
-        }
-        if (i == a_s) {
-            return true;
-        } else {
-            return false;
         }
     }
 

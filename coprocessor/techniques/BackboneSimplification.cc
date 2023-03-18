@@ -13,6 +13,7 @@ Copyright (c) 2021, Anton Reinhard, LGPL v2, see LICENSE
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 
 using namespace Riss;
 
@@ -40,6 +41,7 @@ namespace {
             return "unknown";
         }
     }
+
 } // namespace
 
 namespace Coprocessor {
@@ -123,7 +125,6 @@ namespace Coprocessor {
 
         static bool first = true;
         if (first) {
-            printStatistics(std::cerr);
             first = false;
         }
 
@@ -267,7 +268,7 @@ namespace Coprocessor {
                 lookedAtVars = 0;
                 groupBudget = litsToCheck.size();
 
-                std::cout << "Decreasing group size to " << nGrouping << ", " << groupBudget << " variables left" << std::endl;
+                std::cout << "c [BB] Decreasing group size to " << nGrouping << ", " << groupBudget << " variables left" << std::endl;
 
                 if (nGrouping == 1) {
                     grouping = GROUPED::NOT;
@@ -478,63 +479,59 @@ namespace Coprocessor {
     double BackboneSimplification::getBackboneLikelihood(const Var x) {
         static std::unordered_map<Var, std::uint32_t> cache;
 
-        if (dirtyCache) {
-            cache.clear();
-            cache.reserve(noUsedVars);
-            dirtyCache = false;
-        }
-
-        if (cache.find(x) != cache.end()) {
+        if (!dirtyCache) {
             return cache.at(x);
         }
 
-        // positive and negative x literal
-        Lit pX = mkLit(x, false);
-        Lit nX = mkLit(x, true);
+        cache.clear();
+        cache.reserve(noUsedVars);
+        dirtyCache = false;
 
-        // find number of clauses where x appears positive/negative
-        std::uint32_t xpos = 0;
-        std::uint32_t xneg = 0;
+        std::unordered_map<Var, std::uint32_t> posCache, negCache;
+        for (int i = 0; i < data.nVars(); ++i) {
+            posCache.emplace(i, 0);
+            negCache.emplace(i, 0);
+        }
 
         for (std::size_t i = 0; i < data.getClauses().size(); ++i) {
             const auto& clause = ca[data.getClauses()[i]];
             const Lit* lit = (const Lit*)(clause);
             for (int j = 0; j < clause.size(); ++j) {
-                if (lit[j] == pX) {
-                    ++xpos;
-                    // no need to check rest of clause
-                    continue;
-                }
-                if (lit[j] == nX) {
-                    ++xneg;
-                    // no need to check rest of clause
-                    continue;
-                }
+                if (sign(lit[j]))
+                    negCache[var(lit[j])]++;
+                else
+                    posCache[var(lit[j])]++;
             }
         }
 
         double likelihood;
 
-        switch (likelihood_heuristic) {
-        case LIKELIHOOD_HEURISTIC::MULT:
-            if (xneg == 0 || xpos == 0)
-                likelihood = 1000000;
-            else
-                likelihood = 1. / (xpos * xneg);
-            break;
-        case LIKELIHOOD_HEURISTIC::DIV:
-            if (xneg == 0 || xpos == 0)
-                likelihood = 1000000;
-            else
-                likelihood = (xpos > xneg) ? static_cast<double>(xpos) / xneg : static_cast<double>(xneg) / xpos;
-            break;
-        default:
-            assert(false);
-            break;
+        for (int i = 0; i < data.nVars(); ++i) {
+            const auto& xneg = negCache[i];
+            const auto& xpos = posCache[i];
+
+            switch (likelihood_heuristic) {
+            case LIKELIHOOD_HEURISTIC::MULT:
+                if (xneg == 0 || xpos == 0)
+                    likelihood = 1000000;
+                else
+                    likelihood = 1. / (xpos * xneg);
+                break;
+            case LIKELIHOOD_HEURISTIC::DIV:
+                if (xneg == 0 || xpos == 0)
+                    likelihood = 1000000;
+                else
+                    likelihood = (xpos > xneg) ? static_cast<double>(xpos) / xneg : static_cast<double>(xneg) / xpos;
+                break;
+            default:
+                assert(false);
+                break;
+            }
+
+            cache.emplace(i, likelihood);
         }
 
-        cache.emplace(x, likelihood);
-        return likelihood;
+        return cache.at(x);
     }
 
 } // namespace Coprocessor

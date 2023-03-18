@@ -16,7 +16,55 @@ Copyright (c) 2021, Anton Reinhard, LGPL v2, see LICENSE
 #endif
 
 #include <memory>
+#include <unordered_map>
 #include <unordered_set>
+
+class ClauseLookupTable {
+public:
+    ClauseLookupTable(const Riss::ClauseAllocator& _ca, const Riss::Solver& _solver);
+
+    /**
+     * @brief Initialize the lookup table with the currently available clauses
+     * 
+     * @note This is an extra function so that the data structure is only initialized when needed and not whenever the BE class is constructed, 
+     * this avoids unnecessary overhead when not preprocessing for model counting
+     */
+    inline void init();
+
+    /**
+     * @brief Add the given clause to the data structure
+     *
+     * @param clause
+     */
+    inline void addClause(const CRef c);
+
+    /**
+     * @brief Remove the given clause from the data structure
+     * 
+     * @param c 
+     */
+    inline void removeClause(const CRef c);
+
+    /**
+     * @brief Test whether the given clause is subsumed by any of the clauses in this data structure
+     *
+     * @param clause
+     * @return bool
+     */
+    bool isSubsumed(const std::vector<Lit>& clause) const;
+
+    int numberOfClausesContaining(const Riss::Lit& l) const;
+
+    /**
+     * @brief Get all clauses containing the given literal x
+     */
+    std::vector<CRef> getClausesContaining(const Riss::Lit& l) const;
+
+private:
+    std::unordered_map<int, std::unordered_set<CRef>> clause_sets;
+    const Riss::Solver& solver;
+    const Riss::ClauseAllocator& ca;
+};
 
 namespace Coprocessor {
 
@@ -37,7 +85,7 @@ namespace Coprocessor {
         CaDiCaL::Solver* ownSolver;
         std::string solverSignature = "CaDiCal";
 #else
-        Riss::Solver* ownSolver;        
+        Riss::Solver* ownSolver;
         Coprocessor::CP3Config* cp3config;
         Riss::CoreConfig* solverconfig;
         Riss::vec<Riss::Lit> assumptions; // current set of assumptions that are used for the next SAT call
@@ -45,10 +93,10 @@ namespace Coprocessor {
         std::string solverSignature = "Riss";
 #endif
 
-        int conflictBudget;         // how many conflicts is the solver allowed to have before aborting the search for a model
-        std::vector<bool> varUsed;  // "map" from variable to whether it is used in the solver, i.e. whether it is not a unit
+        int conflictBudget;        // how many conflicts is the solver allowed to have before aborting the search for a model
+        std::vector<bool> varUsed; // "map" from variable to whether it is used in the solver, i.e. whether it is not a unit
         GROUPED grouped;
-        int groupSize;              // literal grouping size
+        int groupSize; // literal grouping size
 
         // statistic variables
         int nDeletedVars;
@@ -79,11 +127,13 @@ namespace Coprocessor {
             UNCONFIRMED,
             INPUT,
             OUTPUT,
-            BACKBONE,       //backbone variables are propagated, they are always output variables
+            BACKBONE, // backbone variables are propagated, they are always output variables
             COUNT
         };
         // bitmap of variables, every variable starts as "unconfirmed"
         std::vector<InputOutputState> inOutVariables;
+
+        ClauseLookupTable clt;
 
     public:
         void reset();
@@ -139,11 +189,6 @@ namespace Coprocessor {
         inline std::uint32_t numRes(const Var& x) const;
 
         /**
-         * @brief Get all clauses containing the given literal x
-         */
-        inline std::vector<Riss::CRef> getClausesContaining(const Lit& x) const;
-
-        /**
          * @brief Generate all resolvents possible on the variable x
          * @return The generated resolvents
          */
@@ -153,12 +198,6 @@ namespace Coprocessor {
          * @brief Applies subsumption to the clauses in the given set, modifying it inplace
          */
         inline void subsume(std::vector<std::vector<Lit>>& clauses) const;
-
-        /**
-         * @brief Checks whether a clause subsumes another
-         * @return true if a subsumes b, false otherwise
-         */
-        inline bool subsumes(std::vector<Lit>& a, std::vector<Lit>& b) const;
 
         /**
          * @brief Performs occurrence simplification on x
