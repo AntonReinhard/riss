@@ -8,7 +8,7 @@ SCRIPT_DIR="$(dirname $0)"
 # Global parameters
 INPUT=""
 COPROCESSOR_EXTRA_ARGS=""
-COPROCESSOR="$SCRIPT_DIR/../build/bin/coprocessor"
+COPROCESSOR="$SCRIPT_DIR/../build/bin/RelWithDebInfo/coprocessor"
 OUTPUT_LOCATION=""
 DEBUG=""
 AWK="awk"
@@ -193,7 +193,8 @@ fi
 # Simplify formula to an equivalent one
 echo "c start simplification ..."
 declare -i SIMPLIFY_STATUS=0
-valgrind --tool=callgrind -v --dump-every-bb=100000000 "$COPROCESSOR" "$WEIGHT_FREE_CNF" \
+#valgrind --quiet --tool=callgrind -v --dump-every-bb=100000000
+"$COPROCESSOR" "$WEIGHT_FREE_CNF" \
     $COPROCESSOR_EXTRA_ARGS \
     -whiteList="$WHITE_FILE" \
     -dimacs="$SIMPLIFIED_CNF" \
@@ -208,10 +209,9 @@ valgrind --tool=callgrind -v --dump-every-bb=100000000 "$COPROCESSOR" "$WEIGHT_F
     -backbone_grouping=1 \
     -backbone_ngrouping=32 \
     -be \
-    -be_grouping=1 \
-    -be_ngrouping=32 \
+    -cp3_verbose=2 \
     -search=0 \
-    || SIMPLIFY_STATUS=$?
+    2>&1 || SIMPLIFY_STATUS=$?
 echo "c simplification returned with $SIMPLIFY_STATUS"
 
 if [ "$SIMPLIFY_STATUS" -ne 0 ] && [ "$SIMPLIFY_STATUS" -ne 20 ] && [ "$SIMPLIFY_STATUS" -ne 10 ]; then

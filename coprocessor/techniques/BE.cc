@@ -179,6 +179,10 @@ namespace Coprocessor {
         , nOccurrencesRemoved(0)
         , dirtyCache(false)
         , clt(_ca, _solver) {
+
+        if (config.opt_verbose > 1) {
+            std::cout << "c [BE] grouping: " << groupingToString(grouped) << std::endl;
+        }
     }
 
     void BE::giveMoreSteps() {
@@ -267,8 +271,6 @@ namespace Coprocessor {
     }
 
     void BE::computeBipartition() {
-        std::cout << "c [BE] Starting Bipartition" << std::endl;
-
         copySolver();
 
         assert(solver.decisionLevel() == 0 && "Only use bipartition computation on decision level 0");
@@ -313,7 +315,9 @@ namespace Coprocessor {
                 groupBudget = varQueue.size();
                 lookedAtVars = 0;
 
-                std::cout << "c [BE] Decreasing group size to " << groupSize << ", " << groupBudget << " variables left" << std::endl;
+                if (config.opt_verbose > 1) {
+                    std::cout << "c [BE] Decreasing group size to " << groupSize << ", " << groupBudget << " variables left" << std::endl;
+                }
 
                 if (groupSize == 1) {
                     grouped = GROUPED::NOT;
@@ -368,7 +372,9 @@ namespace Coprocessor {
         // line 3
         while (changedVars >= minChange) {
             ++nTopLevelIterations;
-            std::cout << "c [BE] elimination top level iteration " << nTopLevelIterations << "\n";
+            if (config.opt_verbose > 1) {
+                std::cout << "c [BE] elimination top level iteration " << nTopLevelIterations << "\n";
+            }
 
             // line 4
             outputVariables = retrySet;
@@ -521,7 +527,7 @@ namespace Coprocessor {
 #if defined(CADICAL)
             ownSolver->constrain((var(l) + 1) * (sign(l) ? -1 : 1));
 #else
-            assert(false);
+            assert("riss solver does not support constraints, use conjunctive grouping or cadical");
 #endif
         };
 
@@ -529,7 +535,7 @@ namespace Coprocessor {
 #if defined(CADICAL)
             ownSolver->constrain(0);
 #else
-            assert(false);
+            assert("riss solver does not support constraints, use conjunctive grouping or cadical");
 #endif
         };
 
@@ -566,6 +572,7 @@ namespace Coprocessor {
                 finish_constraint();
                 break;
             case GROUPED::NOT:
+                assert("groupSize has to be 1 when NOT grouped");
                 break;
             }
         }
@@ -634,8 +641,20 @@ namespace Coprocessor {
         }
 
         if (grouped == GROUPED::DISJUNCTIVE) {
+            if (res == l_Undef) {
+                // don't know anything
+                for (const auto& v : vars) {
+                    inOutVariables[v] = InputOutputState::UNCONFIRMED;
+                }
+                return;
+            }
+
             if (res == l_False) {
                 // all are defined -> all are output
+
+                if (config.opt_verbose > 3) {
+                    std::cout << "c [BE] group of " << groupSize << " found to be output\n";
+                }
                 for (const auto& v : vars) {
                     inOutVariables[v] = InputOutputState::OUTPUT;
                 }
@@ -645,12 +664,17 @@ namespace Coprocessor {
             if (res == l_True) {
                 // at least one variable is not defined -> find which
 #if defined(CADICAL)
+                auto in = 0;
                 for (const auto& v : vars) {
                     if (ownSolver->val(v + 1 + nVar * 3)) {
+                        ++in;
                         inOutVariables[v] = InputOutputState::INPUT;
                     } else {
                         inOutVariables[v] = InputOutputState::UNCONFIRMED;
                     }
+                }
+                if (config.opt_verbose > 3) {
+                    std::cout << "c [BE] group of " << in << " found to be input" << std::endl;
                 }
 #else
                 auto& model = ownSolver->model;

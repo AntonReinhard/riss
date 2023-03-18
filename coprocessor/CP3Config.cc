@@ -660,7 +660,7 @@ namespace Coprocessor {
         //
         // Bipartition and Elimination
         //
-        opt_be_nconf(_cat_be, "be_nconf", "how many conflicts the solver is allowed per tested variable", 5, IntRange(0, INT32_MAX), optionListPtr,
+        opt_be_nconf(_cat_be, "be_nconf", "how many conflicts the solver is allowed per tested variable", 10, IntRange(0, INT32_MAX), optionListPtr,
                      &opt_be)
         , opt_be_maxres(_cat_be, "be_maxres", "how many resolvents are allowed to be added to forget one variable", 500, IntRange(0, INT32_MAX),
                         optionListPtr, &opt_be)

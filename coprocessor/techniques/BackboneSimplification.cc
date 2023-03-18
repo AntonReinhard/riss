@@ -268,7 +268,9 @@ namespace Coprocessor {
                 lookedAtVars = 0;
                 groupBudget = litsToCheck.size();
 
-                std::cout << "c [BB] Decreasing group size to " << nGrouping << ", " << groupBudget << " variables left" << std::endl;
+                if (config.opt_verbose > 1) {
+                    std::cout << "c [BB] Decreasing group size to " << nGrouping << ", " << groupBudget << " variables left" << std::endl;
+                }
 
                 if (nGrouping == 1) {
                     grouping = GROUPED::NOT;
@@ -504,7 +506,7 @@ namespace Coprocessor {
             }
         }
 
-        double likelihood;
+        double likelihood = 0.;
 
         for (int i = 0; i < data.nVars(); ++i) {
             const auto& xneg = negCache[i];
