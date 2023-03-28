@@ -540,7 +540,7 @@ namespace Coprocessor {
         };
 
         // add assumption sZ for every UNCONFIRMED or INPUT variable ("vars" variables are output at this point)
-        for (auto i = 1; i < nVar; ++i) {
+        for (auto i = 0; i < nVar; ++i) {
             if (inOutVariables[i] == InputOutputState::INPUT || inOutVariables[i] == InputOutputState::UNCONFIRMED) {
                 add_assumption(mkLit(i + (2 * nVar))); // ==
                 // sZ and sZ' exclude each other, might as well tell the solver
@@ -652,7 +652,7 @@ namespace Coprocessor {
             if (res == l_False) {
                 // all are defined -> all are output
 
-                if (config.opt_verbose > 3) {
+                if (config.opt_verbose > 2) {
                     std::cout << "c [BE] group of " << groupSize << " found to be output\n";
                 }
                 for (const auto& v : vars) {
@@ -666,14 +666,14 @@ namespace Coprocessor {
 #if defined(CADICAL)
                 auto in = 0;
                 for (const auto& v : vars) {
-                    if (ownSolver->val(v + 1 + nVar * 3)) {
+                    if (ownSolver->val(v + 1 + nVar * 3) > 0) {
                         ++in;
                         inOutVariables[v] = InputOutputState::INPUT;
                     } else {
                         inOutVariables[v] = InputOutputState::UNCONFIRMED;
                     }
                 }
-                if (config.opt_verbose > 3) {
+                if (config.opt_verbose > 2) {
                     std::cout << "c [BE] group of " << in << " found to be input" << std::endl;
                 }
 #else

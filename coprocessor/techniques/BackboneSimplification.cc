@@ -175,7 +175,7 @@ namespace Coprocessor {
         }
 
         for (int32_t i = 0; i < solver.nVars(); ++i) {
-            if (ownSolver->val(i + 1)) {
+            if (ownSolver->val(i + 1) > 0) {
                 possibleBackboneLiterals.emplace_back(mkLit(i, false));
             } else {
                 possibleBackboneLiterals.emplace_back(mkLit(i, true));
@@ -401,7 +401,7 @@ namespace Coprocessor {
                     continue;
                 }
                 // check if signs are different
-                if (sign(possibleBackboneLiterals[j]) == ownSolver->val(j + 1)) {
+                if (sign(possibleBackboneLiterals[j]) == (ownSolver->val(j + 1) < 0)) {
                     possibleBackboneLiterals[j].x = -1;
                     ++crossCheckRemovedLiterals;
                 }
