@@ -162,6 +162,8 @@ namespace Coprocessor {
         , varUsed(solver.nVars(), false)
         , grouped(static_cast<GROUPED>((int)_config.opt_be_grouping))
         , groupSize(_config.opt_be_ngrouping)
+        , initialGrouped(grouped)
+        , initialGroupSize(groupSize)
         , nDeletedVars(0)
         , copyTime(0)
         , bipartitionTime(0)
@@ -198,6 +200,8 @@ namespace Coprocessor {
 
     void BE::printStatistics(std::ostream& stream) {
         stream << "c [STAT] BE solver signature: " << solverSignature << "\n";
+        stream << "c [STAT] BE grouping strategy: " << groupingToString(initialGrouped) << "\n";
+        stream << "c [STAT] BE grouping size: " << initialGroupSize << "\n";
         stream << "c [STAT] BE maxres: " << maxRes << "\n";
         stream << "c [STAT] BE nConf: " << conflictBudget << "\n";
         stream << "c [STAT] BE deleted variables: " << nDeletedVars << "\n";
@@ -209,12 +213,8 @@ namespace Coprocessor {
         stream << "c [STAT] BE nSolverCalls: " << nSolverCalls << "\n";
         stream << "c [STAT] BE elimination candidates: " << eliminationCandidates << "\n";
         stream << "c [STAT] BE no. top level iterations: " << nTopLevelIterations << "\n";
-        int usedVars = 0;
-        for (const auto& it : varUsed) {
-            if (bool(it))
-                ++usedVars;
-        }
-        stream << "c [STAT] BE used variables: " << usedVars << "\n";
+        stream << "c [STAT] BE used variables: " << usedVarsList.size() << "\n";
+        stream << "c [STAT] BE used to total variables ratio: " << static_cast<double>(usedVarsList.size()) / nVar << "\n";
         stream.flush();
     }
 
@@ -305,7 +305,6 @@ namespace Coprocessor {
         // line 4
         int lookedAtVars = 0;
         int groupBudget = varQueue.size();
-        const int usedVars = varQueue.size();
         while (!varQueue.empty()) {
             if (grouped != GROUPED::NOT && lookedAtVars >= groupBudget) {
                 // decrease group size
@@ -540,11 +539,9 @@ namespace Coprocessor {
         };
 
         // add assumption sZ for every UNCONFIRMED or INPUT variable ("vars" variables are output at this point)
-        for (auto i = 0; i < nVar; ++i) {
-            if (inOutVariables[i] == InputOutputState::INPUT || inOutVariables[i] == InputOutputState::UNCONFIRMED) {
-                add_assumption(mkLit(i + (2 * nVar))); // ==
-                // sZ and sZ' exclude each other, might as well tell the solver
-                add_assumption(mkLit(i + (3 * nVar), true)); // !=
+        for (auto v : usedVarsList) {
+            if (inOutVariables[v] == InputOutputState::INPUT || inOutVariables[v] == InputOutputState::UNCONFIRMED) {
+                add_assumption(mkLit(v + (2 * nVar))); // ==
             }
         }
 
@@ -558,16 +555,12 @@ namespace Coprocessor {
             case GROUPED::CONJUNCTIVE:
                 // can't (or at least shouldn't) break symmetry with a larger group
                 for (const auto& v : vars) {
-                    // use the sZ' (+ nvars * 3)
-                    add_assumption(mkLit(v + (2 * nVar), true)); // ==
-                    add_assumption(mkLit(v + (3 * nVar)));       // !=
+                    add_assumption(mkLit(v + (2 * nVar), true)); // !=
                 }
                 break;
             case GROUPED::DISJUNCTIVE:
                 for (const auto& v : vars) {
-                    // use the sZ' (+ nvars * 3)
-                    // add_constraint(mkLit(v + (2 * nVar), true));  // == can't add this because it's a clause
-                    add_constraint(mkLit(v + (3 * nVar))); // !=
+                    add_constraint(mkLit(v + (2 * nVar), true));  // !=
                 }
                 finish_constraint();
                 break;
@@ -582,7 +575,7 @@ namespace Coprocessor {
 
         // now set conflict budget
 #if defined(CADICAL)
-        ownSolver->limit("conflicts", conflictBudget);
+        ownSolver->limit("conflicts", static_cast<int>(conflictBudget));
 
         {
             MethodTimer timer(&solverTime);
@@ -599,7 +592,7 @@ namespace Coprocessor {
             }
         }
 #else
-        ownSolver->setConfBudget(conflictBudget);
+        ownSolver->setConfBudget(static_cast<int>(conflictBudget));
         ownSolver->assumptions.clear();
 
         {
@@ -666,7 +659,7 @@ namespace Coprocessor {
 #if defined(CADICAL)
                 auto in = 0;
                 for (const auto& v : vars) {
-                    if (ownSolver->val(v + 1 + nVar * 3) > 0) {
+                    if (ownSolver->val(v + 1 + nVar * 2) < 0) {
                         ++in;
                         inOutVariables[v] = InputOutputState::INPUT;
                     } else {
@@ -679,7 +672,7 @@ namespace Coprocessor {
 #else
                 auto& model = ownSolver->model;
                 for (const auto& v : vars) {
-                    if (model[v + nVar * 3] == l_True) {
+                    if (model[v + nVar * 2] == l_False) {
                         inOutVariables[v] = InputOutputState::INPUT;
                     } else {
                         inOutVariables[v] = InputOutputState::UNCONFIRMED;
@@ -698,9 +691,8 @@ namespace Coprocessor {
         // register variables
         // 1 * nVar for original variables
         // 2 * nVar for sigma prime
-        // 3 * nVar for the s_z variables from the paper (s_z true makes z == z')
-        // 4 * nVar for extra s_z' variables -> (s_z true makes z != z') -> needed for literal grouping
-        int nVars = nVar * ((groupSize >= 1) ? 4 : 3);
+        // 3 * nVar for the s_z variables from the paper (s_z true makes z == z', s_z false makes z != z')
+        int nVars = nVar * 3;
 #if defined(CADICAL)
         ownSolver = new CaDiCaL::Solver();
 
@@ -723,6 +715,7 @@ namespace Coprocessor {
                 // no need to do this for unused variables
                 continue;
             }
+            usedVarsList.emplace_back(var - 1);
 
             // z is var
             const auto z = var;
@@ -745,14 +738,13 @@ namespace Coprocessor {
 
             if (groupSize >= 1) {
                 // add two extra clauses for literal grouping
-                const auto sZP = var + nVar * 3;
-                // clause (~sZ', z, zP)
-                ownSolver->add(-sZP);
+                // clause (sZ, z, zP)
+                ownSolver->add(sZ);
                 ownSolver->add(z);
                 ownSolver->add(zP);
                 ownSolver->add(0);
-                // clause (~sZ', ~z, ~zP)
-                ownSolver->add(-sZP);
+                // clause (sZ, ~z, ~zP)
+                ownSolver->add(sZ);
                 ownSolver->add(-z);
                 ownSolver->add(-zP);
                 ownSolver->add(0);
@@ -793,13 +785,14 @@ namespace Coprocessor {
                 // no need to do this for unused variables
                 continue;
             }
+            usedVarsList.emplace_back(var);
             // z is var
             const auto z = var;
             const auto zP = var + nVar;
             const auto sZ = var + 2 * nVar;
             // z' is var + nVar
             // s_z is var + 2 * nVar
-            // add two clauses:
+            // add two clauses: sZ implies z == zP
             // clause (~sZ, ~z, zP)
             addedClause.push(mkLit(sZ, true));
             addedClause.push(mkLit(z, true));
@@ -814,16 +807,15 @@ namespace Coprocessor {
             addedClause.clear();
 
             if (groupSize >= 1) {
-                // add two extra clauses for literal grouping
-                const auto sZP = var + nVar * 3;
-                // clause (~sZ', z, zP)
-                addedClause.push(mkLit(sZP, true));
+                // add two extra clauses for literal grouping -> ~sZ implies z != zP
+                // clause (sZ, z, zP)
+                addedClause.push(mkLit(sZ, false));
                 addedClause.push(mkLit(z));
                 addedClause.push(mkLit(zP));
                 ownSolver->integrateNewClause(addedClause);
                 addedClause.clear();
-                // clause (~sZ', ~z, ~zP)
-                addedClause.push(mkLit(sZP, true));
+                // clause (sZ, ~z, ~zP)
+                addedClause.push(mkLit(sZ, false));
                 addedClause.push(mkLit(z, true));
                 addedClause.push(mkLit(zP, true));
                 ownSolver->integrateNewClause(addedClause);

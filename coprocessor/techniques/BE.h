@@ -95,8 +95,12 @@ namespace Coprocessor {
 
         int conflictBudget;        // how many conflicts is the solver allowed to have before aborting the search for a model
         std::vector<bool> varUsed; // "map" from variable to whether it is used in the solver, i.e. whether it is not a unit
+        std::vector<Riss::Var> usedVarsList; // a list of all the used vars
         GROUPED grouped;
         int groupSize; // literal grouping size
+
+        const GROUPED initialGrouped;
+        const int initialGroupSize;
 
         // statistic variables
         int nDeletedVars;
